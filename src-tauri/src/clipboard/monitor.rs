@@ -61,9 +61,15 @@ impl ClipboardMonitor {
     ) {
         let paused = self.paused.clone();
         let skip_next = self.skip_next.clone();
-        let rt_handle = tokio::runtime::Handle::current();
 
         std::thread::spawn(move || {
+            // Create a dedicated tokio runtime for async sync operations.
+            // We can't use Handle::current() because the Tauri setup hook
+            // may not have a tokio runtime context on all platforms (e.g. Windows).
+            let rt = sync_manager.as_ref().map(|_| {
+                tokio::runtime::Runtime::new().expect("Failed to create tokio runtime")
+            });
+
             let mut last_hash: Option<String> = None;
 
             // Read initial clipboard content to avoid capturing pre-existing content
@@ -126,11 +132,11 @@ impl ClipboardMonitor {
                         let _ = app_handle.emit("clipboard-changed", &item);
 
                         // Push to sync if enabled
-                        if let Some(ref sync) = sync_manager {
+                        if let (Some(ref sync), Some(ref rt)) = (&sync_manager, &rt) {
                             let item_id = item.id.clone();
                             let db_ref = db.clone();
                             let sync_ref = sync.clone();
-                            rt_handle.spawn(async move {
+                            rt.spawn(async move {
                                 if let Ok(Some((encrypted, hash))) =
                                     db_ref.get_item_encrypted(&item_id)
                                 {
