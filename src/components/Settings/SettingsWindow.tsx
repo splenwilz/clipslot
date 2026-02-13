@@ -1,4 +1,5 @@
 import { useState } from "react";
+import AccountTab from "./AccountTab";
 import GeneralTab from "./GeneralTab";
 import PrivacyTab from "./PrivacyTab";
 import SlotsTab from "./SlotsTab";
@@ -8,6 +9,7 @@ const TABS = [
   { id: "general", label: "General" },
   { id: "privacy", label: "Privacy" },
   { id: "slots", label: "Slots" },
+  { id: "account", label: "Account" },
 ] as const;
 
 type TabId = (typeof TABS)[number]["id"];
@@ -37,6 +39,7 @@ export default function SettingsWindow() {
         {activeTab === "general" && <GeneralTab />}
         {activeTab === "privacy" && <PrivacyTab />}
         {activeTab === "slots" && <SlotsTab />}
+        {activeTab === "account" && <AccountTab />}
       </div>
     </div>
   );

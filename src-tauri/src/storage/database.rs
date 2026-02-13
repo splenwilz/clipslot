@@ -76,9 +76,17 @@ impl Database {
             "INSERT OR IGNORE INTO app_config (key, value) VALUES ('excluded_apps', '[]')",
             [],
         )?;
+        conn.execute(
+            "INSERT OR IGNORE INTO app_config (key, value) VALUES ('sync_server_url', 'http://localhost:3000')",
+            [],
+        )?;
+        conn.execute(
+            "INSERT OR IGNORE INTO app_config (key, value) VALUES ('history_sync_enabled', 'false')",
+            [],
+        )?;
 
-        // Pre-populate 5 empty slots
-        for i in 1..=5 {
+        // Pre-populate 10 empty slots (slots 6-10 for sync, shortcuts cover 1-5)
+        for i in 1..=10 {
             conn.execute(
                 "INSERT OR IGNORE INTO slots (slot_number, name, updated_at) VALUES (?1, ?2, 0)",
                 params![i, format!("Slot {}", i)],
@@ -477,6 +485,117 @@ impl Database {
         // Return the updated slot info
         drop(conn);
         self.get_slot(slot_number)
+    }
+
+    // ── Sync Helpers ──────────────────────────────────────────────────────
+
+    /// Get the raw encrypted content for a slot (without decrypting), plus its updated_at.
+    pub fn get_slot_raw(&self, slot_number: u32) -> SqliteResult<(Option<String>, i64)> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT c.content, s.updated_at
+             FROM slots s
+             LEFT JOIN clipboard_items c ON s.item_id = c.id
+             WHERE s.slot_number = ?1",
+            params![slot_number],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+    }
+
+    /// Save a pre-encrypted blob directly into a slot (from sync).
+    /// Creates a clipboard_items entry with is_promoted=1 and links it to the slot.
+    pub fn save_encrypted_to_slot(
+        &self,
+        slot_number: u32,
+        encrypted_content: &str,
+        updated_at: i64,
+        device_id: &str,
+    ) -> SqliteResult<()> {
+        let conn = self.conn.lock().unwrap();
+
+        let item_id = uuid::Uuid::new_v4().to_string();
+        let content_hash = format!("sync_{}", slot_number);
+
+        conn.execute(
+            "INSERT OR REPLACE INTO clipboard_items
+             (id, content, content_hash, content_type, source_app, device_id, created_at, is_promoted)
+             VALUES (?1, ?2, ?3, 'text/plain', 'sync', ?4, ?5, 1)",
+            params![item_id, encrypted_content, content_hash, device_id, updated_at],
+        )?;
+
+        conn.execute(
+            "UPDATE slots SET item_id = ?1, updated_at = ?2 WHERE slot_number = ?3",
+            params![item_id, updated_at, slot_number],
+        )?;
+
+        Ok(())
+    }
+
+    /// Check if an item with the given content_hash exists in the database.
+    pub fn has_item_with_hash(&self, content_hash: &str) -> SqliteResult<bool> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM clipboard_items WHERE content_hash = ?1)",
+            params![content_hash],
+            |row| row.get(0),
+        )
+    }
+
+    /// Insert a pre-encrypted item from sync (history pull).
+    pub fn insert_synced_item(
+        &self,
+        id: &str,
+        encrypted_content: &str,
+        content_hash: &str,
+        device_id: &str,
+        created_at: i64,
+    ) -> SqliteResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR IGNORE INTO clipboard_items
+             (id, content, content_hash, content_type, source_app, device_id, created_at, is_promoted)
+             VALUES (?1, ?2, ?3, 'text/plain', 'sync', ?4, ?5, 0)",
+            params![id, encrypted_content, content_hash, device_id, created_at],
+        )?;
+        Ok(())
+    }
+
+    /// Get the raw encrypted content for a clipboard item by ID.
+    pub fn get_item_encrypted(&self, id: &str) -> SqliteResult<Option<(String, String)>> {
+        let conn = self.conn.lock().unwrap();
+        let result = conn.query_row(
+            "SELECT content, content_hash FROM clipboard_items WHERE id = ?1",
+            params![id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        );
+        match result {
+            Ok(data) => Ok(Some(data)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Get unpromoted (history) items with their raw encrypted content for sync push.
+    /// Returns (id, encrypted_content, content_hash) tuples.
+    pub fn get_unpromoted_encrypted_items(
+        &self,
+        limit: u32,
+    ) -> SqliteResult<Vec<(String, String, String)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, content, content_hash
+             FROM clipboard_items
+             WHERE is_promoted = 0
+             ORDER BY created_at DESC
+             LIMIT ?1",
+        )?;
+        let items = stmt
+            .query_map(params![limit], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(items)
     }
 
     // ── Settings ─────────────────────────────────────────────────────────

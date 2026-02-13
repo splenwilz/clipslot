@@ -7,6 +7,7 @@ use tauri_plugin_clipboard_manager::ClipboardExt;
 
 use super::item::ClipboardItem;
 use crate::storage::database::Database;
+use crate::sync::manager::SyncManager;
 
 const POLL_INTERVAL_MS: u64 = 500;
 
@@ -56,6 +57,7 @@ impl ClipboardMonitor {
         app_handle: AppHandle<R>,
         device_id: String,
         db: Arc<Database>,
+        sync_manager: Option<Arc<SyncManager>>,
     ) {
         let paused = self.paused.clone();
         let skip_next = self.skip_next.clone();
@@ -121,6 +123,22 @@ impl ClipboardMonitor {
                         }
                         // Emit event to frontend
                         let _ = app_handle.emit("clipboard-changed", &item);
+
+                        // Push to sync if enabled
+                        if let Some(ref sync) = sync_manager {
+                            let item_id = item.id.clone();
+                            let db_ref = db.clone();
+                            let sync_ref = sync.clone();
+                            tokio::spawn(async move {
+                                if let Ok(Some((encrypted, hash))) =
+                                    db_ref.get_item_encrypted(&item_id)
+                                {
+                                    sync_ref
+                                        .notify_history_push(&item_id, &encrypted, &hash)
+                                        .await;
+                                }
+                            });
+                        }
                     }
                     Ok(false) => {
                         // Duplicate detected, skip

@@ -23,6 +23,8 @@ pub struct AppState {
     /// Per-user broadcast channels for WebSocket relay.
     /// Key: user_id, Value: sender that broadcasts (origin_device_id, json_payload).
     pub user_channels: Arc<DashMap<Uuid, broadcast::Sender<(Uuid, String)>>>,
+    /// Temporary link codes for key exchange: code -> (encrypted_key, created_at).
+    pub link_codes: Arc<DashMap<String, (String, std::time::Instant)>>,
 }
 
 #[derive(OpenApi)]
@@ -116,10 +118,32 @@ async fn main() {
             .allow_credentials(true)
     };
 
+    let link_codes: Arc<DashMap<String, (String, std::time::Instant)>> =
+        Arc::new(DashMap::new());
+
+    // Spawn TTL cleanup task for expired link codes (every 60 seconds)
+    {
+        let codes = link_codes.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                let before = codes.len();
+                codes.retain(|_, (_, created_at)| {
+                    created_at.elapsed() < std::time::Duration::from_secs(300)
+                });
+                let removed = before - codes.len();
+                if removed > 0 {
+                    tracing::debug!("Cleaned up {} expired link codes", removed);
+                }
+            }
+        });
+    }
+
     let state = AppState {
         db: pool,
         jwt_secret: config.jwt_secret,
         user_channels: Arc::new(DashMap::new()),
+        link_codes,
     };
 
     let app = routes::api_router(state)

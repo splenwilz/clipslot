@@ -59,8 +59,9 @@ export default function SlotsTab() {
       <div className="setting-group">
         <label className="setting-label">Permanent Slots</label>
         <p className="setting-description">
-          Manage your 5 permanent clipboard slots. Save with Cmd+Ctrl+1-5, paste
-          with Cmd+Option+1-5.
+          Manage your 10 permanent clipboard slots. Keyboard shortcuts cover
+          slots 1-5 (Save: Cmd+Ctrl+1-5, Paste: Cmd+Option+1-5). Slots 6-10
+          are available via the UI and sync.
         </p>
 
         <div className="slots-list">

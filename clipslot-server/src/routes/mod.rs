@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod key_exchange;
 pub mod sync;
 pub mod ws;
 
@@ -8,6 +9,7 @@ use crate::AppState;
 pub fn api_router(state: AppState) -> Router {
     Router::new()
         .nest("/api/auth", auth::router())
+        .nest("/api/auth", key_exchange::router())
         .nest("/api/sync", sync::router())
         .merge(ws::router())
         .with_state(state)

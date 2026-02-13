@@ -11,6 +11,7 @@ use clipboard::monitor::ClipboardMonitor;
 use crypto::cipher::CryptoEngine;
 use slots::SlotInfo;
 use storage::database::Database;
+use sync::manager::SyncManager;
 use tauri::menu::{Menu, MenuItemBuilder, PredefinedMenuItem};
 use tauri::tray::{TrayIcon, TrayIconBuilder};
 use tauri::{AppHandle, Listener, Manager, WebviewUrl, WebviewWindowBuilder, Wry};
@@ -30,6 +31,25 @@ struct TrayIconHandle(TrayIcon);
 
 fn build_tray_menu(app: &AppHandle, slots: &[SlotInfo], is_paused: bool) -> tauri::Result<Menu<Wry>> {
     let mut items: Vec<Box<dyn tauri::menu::IsMenuItem<Wry>>> = Vec::new();
+
+    // Sync status line (if logged in)
+    if let Some(sync_manager) = app.try_state::<Arc<SyncManager>>() {
+        let has_auth = sync_manager.has_auth();
+        if has_auth {
+            let status = sync_manager.get_status_blocking();
+            let label = match status {
+                sync::types::SyncStatus::Connected => "Sync: Connected",
+                sync::types::SyncStatus::Connecting => "Sync: Connecting...",
+                sync::types::SyncStatus::Syncing => "Sync: Syncing...",
+                sync::types::SyncStatus::Disconnected => "Sync: Offline",
+            };
+            let status_item = MenuItemBuilder::with_id("sync_status", label)
+                .enabled(false)
+                .build(app)?;
+            items.push(Box::new(status_item));
+            items.push(Box::new(PredefinedMenuItem::separator(app)?));
+        }
+    }
 
     // Slot items
     for slot in slots {
@@ -199,6 +219,7 @@ fn copy_to_clipboard(
 fn save_to_slot(
     app: tauri::AppHandle,
     db: tauri::State<'_, Arc<Database>>,
+    sync: tauri::State<'_, Arc<SyncManager>>,
     slot_number: u32,
 ) -> Result<SlotInfo, String> {
     use tauri_plugin_clipboard_manager::ClipboardExt;
@@ -215,6 +236,13 @@ fn save_to_slot(
         .save_to_slot(slot_number, &item)
         .map_err(|e| e.to_string())?;
     refresh_tray_menu(&app);
+
+    // Notify sync manager of slot change
+    let sync = sync.inner().clone();
+    tokio::spawn(async move {
+        sync.notify_slot_changed(slot_number).await;
+    });
+
     Ok(result)
 }
 
@@ -272,7 +300,13 @@ fn get_settings(
     Ok(map)
 }
 
-const ALLOWED_SETTING_KEYS: &[&str] = &["history_limit", "auto_clear_on_quit", "excluded_apps"];
+const ALLOWED_SETTING_KEYS: &[&str] = &[
+    "history_limit",
+    "auto_clear_on_quit",
+    "excluded_apps",
+    "sync_server_url",
+    "history_sync_enabled",
+];
 
 #[tauri::command]
 fn update_setting(
@@ -301,6 +335,7 @@ fn toggle_monitoring(
 fn save_item_to_slot(
     app: tauri::AppHandle,
     db: tauri::State<'_, Arc<Database>>,
+    sync: tauri::State<'_, Arc<SyncManager>>,
     item_id: String,
     slot_number: u32,
 ) -> Result<SlotInfo, String> {
@@ -308,6 +343,13 @@ fn save_item_to_slot(
         .save_existing_item_to_slot(slot_number, &item_id)
         .map_err(|e| e.to_string())?;
     refresh_tray_menu(&app);
+
+    // Notify sync manager of slot change
+    let sync = sync.inner().clone();
+    tokio::spawn(async move {
+        sync.notify_slot_changed(slot_number).await;
+    });
+
     Ok(result)
 }
 
@@ -316,6 +358,86 @@ fn save_item_to_slot(
 #[tauri::command]
 fn is_encryption_enabled() -> bool {
     true
+}
+
+// ── Sync Commands ────────────────────────────────────────────────────────────
+
+#[tauri::command]
+async fn sync_login(
+    sync: tauri::State<'_, Arc<SyncManager>>,
+    email: String,
+    password: String,
+) -> Result<sync::types::SyncState, String> {
+    sync.login(&email, &password).await
+}
+
+#[tauri::command]
+async fn sync_register(
+    sync: tauri::State<'_, Arc<SyncManager>>,
+    email: String,
+    password: String,
+) -> Result<sync::types::SyncState, String> {
+    sync.register(&email, &password).await
+}
+
+#[tauri::command]
+async fn sync_logout(sync: tauri::State<'_, Arc<SyncManager>>) -> Result<(), String> {
+    sync.logout().await
+}
+
+#[tauri::command]
+async fn get_sync_status(
+    sync: tauri::State<'_, Arc<SyncManager>>,
+) -> Result<sync::types::SyncState, String> {
+    Ok(sync.get_sync_status().await)
+}
+
+#[tauri::command]
+async fn get_linked_devices(
+    sync: tauri::State<'_, Arc<SyncManager>>,
+) -> Result<Vec<sync::types::DeviceInfo>, String> {
+    sync.get_linked_devices().await
+}
+
+#[tauri::command]
+async fn force_sync(sync: tauri::State<'_, Arc<SyncManager>>) -> Result<String, String> {
+    sync.start_sync().await
+}
+
+#[tauri::command]
+fn toggle_history_sync(
+    db: tauri::State<'_, Arc<Database>>,
+    enabled: bool,
+) -> Result<bool, String> {
+    let value = if enabled { "true" } else { "false" };
+    db.set_setting("history_sync_enabled", value)
+        .map_err(|e| e.to_string())?;
+    Ok(enabled)
+}
+
+#[tauri::command]
+async fn generate_link_code(
+    sync: tauri::State<'_, Arc<SyncManager>>,
+) -> Result<String, String> {
+    let token = sync
+        .get_token()
+        .await
+        .ok_or_else(|| "Not logged in".to_string())?;
+    let api = sync.get_api().await;
+    sync::key_exchange::generate_link_code(&api, &token).await
+}
+
+#[tauri::command]
+async fn enter_link_code(
+    sync: tauri::State<'_, Arc<SyncManager>>,
+    code: String,
+) -> Result<(), String> {
+    let token = sync
+        .get_token()
+        .await
+        .ok_or_else(|| "Not logged in".to_string())?;
+    let api = sync.get_api().await;
+    sync::key_exchange::redeem_link_code(&api, &token, &code).await
 }
 
 // ── App Entry ───────────────────────────────────────────────────────────────
@@ -343,6 +465,15 @@ pub fn run() {
             toggle_monitoring,
             save_item_to_slot,
             is_encryption_enabled,
+            sync_login,
+            sync_register,
+            sync_logout,
+            get_sync_status,
+            get_linked_devices,
+            force_sync,
+            toggle_history_sync,
+            generate_link_code,
+            enter_link_code,
         ])
         .setup(|app| {
             #[cfg(target_os = "macos")]
@@ -374,12 +505,16 @@ pub fn run() {
             );
             app.manage(db.clone());
 
+            // Initialize sync manager
+            let sync_manager = Arc::new(SyncManager::new(db.clone()));
+            app.manage(sync_manager.clone());
+
             // Start clipboard monitoring
             let device_id = get_or_create_device_id();
             println!("[ClipSlot] Device ID: {}", device_id);
 
             let monitor = Arc::new(ClipboardMonitor::new());
-            monitor.start(app.handle().clone(), device_id, db.clone());
+            monitor.start(app.handle().clone(), device_id, db.clone(), Some(sync_manager));
             app.manage(monitor);
 
             // Start keyboard listener for slot shortcuts
