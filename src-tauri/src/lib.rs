@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use clipboard::item::ClipboardItem;
 use clipboard::monitor::ClipboardMonitor;
+use crypto::cipher::CryptoEngine;
 use slots::SlotInfo;
 use storage::database::Database;
 use tauri::menu::{Menu, MenuItemBuilder, PredefinedMenuItem};
@@ -271,12 +272,17 @@ fn get_settings(
     Ok(map)
 }
 
+const ALLOWED_SETTING_KEYS: &[&str] = &["history_limit", "auto_clear_on_quit", "excluded_apps"];
+
 #[tauri::command]
 fn update_setting(
     db: tauri::State<'_, Arc<Database>>,
     key: String,
     value: String,
 ) -> Result<bool, String> {
+    if !ALLOWED_SETTING_KEYS.contains(&key.as_str()) {
+        return Err(format!("Unknown setting key: {}", key));
+    }
     db.set_setting(&key, &value).map_err(|e| e.to_string())?;
     Ok(true)
 }
@@ -305,6 +311,13 @@ fn save_item_to_slot(
     Ok(result)
 }
 
+// ── Encryption Commands ──────────────────────────────────────────────────────
+
+#[tauri::command]
+fn is_encryption_enabled() -> bool {
+    true
+}
+
 // ── App Entry ───────────────────────────────────────────────────────────────
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -329,6 +342,7 @@ pub fn run() {
             update_setting,
             toggle_monitoring,
             save_item_to_slot,
+            is_encryption_enabled,
         ])
         .setup(|app| {
             #[cfg(target_os = "macos")]
@@ -345,13 +359,18 @@ pub fn run() {
                 }
             }
 
+            // Initialize encryption
+            let master_key = crypto::keychain::get_or_create_master_key()
+                .expect("failed to initialize encryption key");
+            let crypto_engine = Arc::new(CryptoEngine::new(&master_key));
+
             // Initialize database
             let data_dir = app
                 .path()
                 .app_data_dir()
                 .expect("failed to resolve app data dir");
             let db = Arc::new(
-                Database::new(data_dir).expect("failed to initialize database"),
+                Database::new(data_dir, crypto_engine).expect("failed to initialize database"),
             );
             app.manage(db.clone());
 
@@ -388,6 +407,13 @@ pub fn run() {
             });
 
             Ok(())
+        })
+        .on_window_event(|_window, event| {
+            // Prevent app from quitting when windows are closed — it's a tray app
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = _window.hide();
+            }
         })
         .run(tauri::generate_context!())
         .expect("error while running ClipSlot");

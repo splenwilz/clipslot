@@ -270,7 +270,7 @@
   font-size: 12px;
   color: var(--text-muted);
   white-space: pre-wrap;
-  word-break: break-word;
+  overflow-wrap: break-word;
   line-height: 1.3;
 }
 

@@ -18,6 +18,7 @@ export default function PrivacyTab() {
   }, []);
 
   const saveExcludedApps = async (apps: string[]) => {
+    const prev = excludedApps;
     setExcludedApps(apps);
     try {
       await invoke("update_setting", {
@@ -26,6 +27,7 @@ export default function PrivacyTab() {
       });
     } catch (e) {
       console.error("Failed to save excluded apps:", e);
+      setExcludedApps(prev);
     }
   };
 

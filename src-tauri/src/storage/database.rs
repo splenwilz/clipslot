@@ -1,18 +1,20 @@
 use rusqlite::{params, Connection, Result as SqliteResult};
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use crate::clipboard::item::ClipboardItem;
+use crate::crypto::cipher::CryptoEngine;
 use crate::slots::SlotInfo;
 
 const DEFAULT_HISTORY_LIMIT: u32 = 500;
 
 pub struct Database {
     conn: Mutex<Connection>,
+    crypto: Arc<CryptoEngine>,
 }
 
 impl Database {
-    pub fn new(data_dir: PathBuf) -> SqliteResult<Self> {
+    pub fn new(data_dir: PathBuf, crypto: Arc<CryptoEngine>) -> SqliteResult<Self> {
         std::fs::create_dir_all(&data_dir).ok();
         let db_path = data_dir.join("clipslot.db");
         println!("[ClipSlot] Database: {}", db_path.display());
@@ -20,8 +22,10 @@ impl Database {
         let conn = Connection::open(&db_path)?;
         let db = Self {
             conn: Mutex::new(conn),
+            crypto,
         };
         db.run_migrations()?;
+        db.migrate_encrypt_existing();
         Ok(db)
     }
 
@@ -85,6 +89,54 @@ impl Database {
         Ok(())
     }
 
+    /// Encrypt any existing plaintext content (items without "ENC:" prefix).
+    fn migrate_encrypt_existing(&self) {
+        let conn = self.conn.lock().unwrap();
+
+        let mut stmt = match conn.prepare("SELECT id, content FROM clipboard_items") {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("[ClipSlot] Failed to prepare migration query: {}", e);
+                return;
+            }
+        };
+
+        let rows: Vec<(String, String)> = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap_or_else(|_| panic!("query failed"))
+            .filter_map(|r| r.ok())
+            .collect();
+
+        let mut migrated = 0;
+        for (id, content) in &rows {
+            if content.starts_with("ENC:") {
+                continue;
+            }
+            match self.crypto.encrypt(content) {
+                Ok(encrypted) => {
+                    if let Err(e) = conn.execute(
+                        "UPDATE clipboard_items SET content = ?1 WHERE id = ?2",
+                        params![encrypted, id],
+                    ) {
+                        eprintln!("[ClipSlot] Failed to encrypt item {}: {}", id, e);
+                    } else {
+                        migrated += 1;
+                    }
+                }
+                Err(e) => {
+                    eprintln!("[ClipSlot] Encryption failed for item {}: {}", id, e);
+                }
+            }
+        }
+
+        if migrated > 0 {
+            println!(
+                "[ClipSlot] Encrypted {} existing plaintext items",
+                migrated
+            );
+        }
+    }
+
     /// Insert a clipboard item, skipping if the same content was captured in the last 2 seconds.
     /// Returns true if inserted, false if skipped as duplicate.
     pub fn insert_item(&self, item: &ClipboardItem) -> SqliteResult<bool> {
@@ -102,13 +154,18 @@ impl Database {
             return Ok(false);
         }
 
+        let encrypted_content = self
+            .crypto
+            .encrypt(&item.content)
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::new(std::io::ErrorKind::Other, e))))?;
+
         conn.execute(
             "INSERT OR REPLACE INTO clipboard_items
              (id, content, content_hash, content_type, source_app, device_id, created_at, is_promoted)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 item.id,
-                item.content,
+                encrypted_content,
                 item.content_hash,
                 item.content_type,
                 item.source_app,
@@ -130,7 +187,7 @@ impl Database {
              LIMIT ?1 OFFSET ?2",
         )?;
 
-        let items = stmt
+        let items: Vec<ClipboardItem> = stmt
             .query_map(params![limit, offset], |row| {
                 Ok(ClipboardItem {
                     id: row.get(0)?,
@@ -146,22 +203,32 @@ impl Database {
             .filter_map(|r| r.ok())
             .collect();
 
-        Ok(items)
+        // Decrypt content
+        let decrypted: Vec<ClipboardItem> = items
+            .into_iter()
+            .map(|mut item| {
+                if let Ok(plain) = self.crypto.decrypt(&item.content) {
+                    item.content = plain;
+                }
+                item
+            })
+            .collect();
+
+        Ok(decrypted)
     }
 
+    /// Search by decrypting all items in memory and filtering.
     pub fn search(&self, query: &str) -> SqliteResult<Vec<ClipboardItem>> {
         let conn = self.conn.lock().unwrap();
-        let pattern = format!("%{}%", query);
         let mut stmt = conn.prepare(
             "SELECT id, content, content_hash, content_type, source_app, device_id, created_at, is_promoted
              FROM clipboard_items
-             WHERE content LIKE ?1 AND is_promoted = 0
-             ORDER BY created_at DESC
-             LIMIT 100",
+             WHERE is_promoted = 0
+             ORDER BY created_at DESC",
         )?;
 
-        let items = stmt
-            .query_map(params![pattern], |row| {
+        let items: Vec<ClipboardItem> = stmt
+            .query_map([], |row| {
                 Ok(ClipboardItem {
                     id: row.get(0)?,
                     content: row.get(1)?,
@@ -176,7 +243,25 @@ impl Database {
             .filter_map(|r| r.ok())
             .collect();
 
-        Ok(items)
+        let query_lower = query.to_lowercase();
+        let results: Vec<ClipboardItem> = items
+            .into_iter()
+            .filter_map(|mut item| {
+                if let Ok(plain) = self.crypto.decrypt(&item.content) {
+                    item.content = plain;
+                    if item.content.to_lowercase().contains(&query_lower) {
+                        Some(item)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            })
+            .take(100)
+            .collect();
+
+        Ok(results)
     }
 
     pub fn delete_item(&self, id: &str) -> SqliteResult<bool> {
@@ -221,6 +306,11 @@ impl Database {
     pub fn save_to_slot(&self, slot_number: u32, item: &ClipboardItem) -> SqliteResult<SlotInfo> {
         let conn = self.conn.lock().unwrap();
 
+        let encrypted_content = self
+            .crypto
+            .encrypt(&item.content)
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::new(std::io::ErrorKind::Other, e))))?;
+
         // Insert or update the clipboard item (mark as promoted)
         conn.execute(
             "INSERT OR REPLACE INTO clipboard_items
@@ -228,7 +318,7 @@ impl Database {
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1)",
             params![
                 item.id,
-                item.content,
+                encrypted_content,
                 item.content_hash,
                 item.content_type,
                 item.source_app,
@@ -269,32 +359,36 @@ impl Database {
 
     pub fn get_slot(&self, slot_number: u32) -> SqliteResult<SlotInfo> {
         let conn = self.conn.lock().unwrap();
-        conn.query_row(
+        let row_data: (u32, String, i64, Option<String>) = conn.query_row(
             "SELECT s.slot_number, s.name, s.updated_at, c.content
              FROM slots s
              LEFT JOIN clipboard_items c ON s.item_id = c.id
              WHERE s.slot_number = ?1",
             params![slot_number],
-            |row| {
-                let content: Option<String> = row.get(3)?;
-                let preview = content.as_ref().map(|c| {
-                    if c.chars().count() > 100 {
-                        let end = c.char_indices().nth(100).map(|(i, _)| i).unwrap_or(c.len());
-                        format!("{}...", &c[..end])
-                    } else {
-                        c.clone()
-                    }
-                });
-                Ok(SlotInfo {
-                    slot_number: row.get(0)?,
-                    name: row.get(1)?,
-                    content: content.clone(),
-                    content_preview: preview,
-                    updated_at: row.get(2)?,
-                    is_empty: content.is_none(),
-                })
-            },
-        )
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )?;
+
+        let content = row_data.3.and_then(|encrypted| {
+            self.crypto.decrypt(&encrypted).ok()
+        });
+
+        let preview = content.as_ref().map(|c| {
+            if c.chars().count() > 100 {
+                let end = c.char_indices().nth(100).map(|(i, _)| i).unwrap_or(c.len());
+                format!("{}...", &c[..end])
+            } else {
+                c.clone()
+            }
+        });
+
+        Ok(SlotInfo {
+            slot_number: row_data.0,
+            name: row_data.1,
+            content: content.clone(),
+            content_preview: preview,
+            updated_at: row_data.2,
+            is_empty: content.is_none(),
+        })
     }
 
     pub fn get_all_slots(&self) -> SqliteResult<Vec<SlotInfo>> {
@@ -306,9 +400,17 @@ impl Database {
              ORDER BY s.slot_number ASC",
         )?;
 
-        let slots = stmt
+        let raw_rows: Vec<(u32, String, i64, Option<String>)> = stmt
             .query_map([], |row| {
-                let content: Option<String> = row.get(3)?;
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        let slots = raw_rows
+            .into_iter()
+            .map(|(slot_number, name, updated_at, encrypted)| {
+                let content = encrypted.and_then(|e| self.crypto.decrypt(&e).ok());
                 let preview = content.as_ref().map(|c| {
                     if c.chars().count() > 100 {
                         let end = c.char_indices().nth(100).map(|(i, _)| i).unwrap_or(c.len());
@@ -317,16 +419,15 @@ impl Database {
                         c.clone()
                     }
                 });
-                Ok(SlotInfo {
-                    slot_number: row.get(0)?,
-                    name: row.get(1)?,
+                SlotInfo {
+                    slot_number,
+                    name,
                     content: content.clone(),
                     content_preview: preview,
-                    updated_at: row.get(2)?,
+                    updated_at,
                     is_empty: content.is_none(),
-                })
-            })?
-            .filter_map(|r| r.ok())
+                }
+            })
             .collect();
 
         Ok(slots)

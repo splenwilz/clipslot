@@ -170,7 +170,13 @@ pub fn handle_paste_from_slot(app: &AppHandle<Wry>, slot_number: u32) {
         return;
     }
 
-    let slot_content = slot_info.content.unwrap();
+    let slot_content = match slot_info.content {
+        Some(c) => c,
+        None => {
+            eprintln!("[ClipSlot] Slot {} content is None despite not being empty", slot_number);
+            return;
+        }
+    };
     println!(
         "[ClipSlot] Pasting from {} ({} chars)",
         slot_info.name,
