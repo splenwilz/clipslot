@@ -22,3 +22,7 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Clipslot server
+clipslot-server/target
+clipslot-server/.env
