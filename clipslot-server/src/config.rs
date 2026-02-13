@@ -12,8 +12,11 @@ impl Config {
         Self {
             database_url: std::env::var("DATABASE_URL").expect("DATABASE_URL must be set"),
             jwt_secret: std::env::var("JWT_SECRET").expect("JWT_SECRET must be set"),
-            listen_addr: std::env::var("LISTEN_ADDR")
-                .unwrap_or_else(|_| "0.0.0.0:3000".to_string()),
+            listen_addr: std::env::var("LISTEN_ADDR").unwrap_or_else(|_| {
+                // Railway sets PORT; fall back to 3000 for local dev
+                let port = std::env::var("PORT").unwrap_or_else(|_| "3000".to_string());
+                format!("0.0.0.0:{}", port)
+            }),
             cors_origins: std::env::var("CORS_ORIGINS").unwrap_or_else(|_| "*".to_string()),
         }
     }
