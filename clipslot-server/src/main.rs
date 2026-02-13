@@ -9,6 +9,7 @@ use std::sync::Arc;
 use dashmap::DashMap;
 use sqlx::postgres::PgPoolOptions;
 use tokio::sync::broadcast;
+use axum::http::{HeaderValue, Method};
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 use utoipa::OpenApi;
@@ -94,6 +95,27 @@ async fn main() {
         .await
         .expect("Failed to run migrations");
 
+    let cors = if config.cors_origins == "*" {
+        CorsLayer::permissive()
+    } else {
+        let origins: Vec<HeaderValue> = config
+            .cors_origins
+            .split(',')
+            .filter_map(|s| s.trim().parse().ok())
+            .collect();
+        CorsLayer::new()
+            .allow_origin(origins)
+            .allow_methods([
+                Method::GET,
+                Method::POST,
+                Method::PUT,
+                Method::DELETE,
+                Method::OPTIONS,
+            ])
+            .allow_headers(tower_http::cors::Any)
+            .allow_credentials(true)
+    };
+
     let state = AppState {
         db: pool,
         jwt_secret: config.jwt_secret,
@@ -102,7 +124,7 @@ async fn main() {
 
     let app = routes::api_router(state)
         .merge(SwaggerUi::new("/docs").url("/api-docs/openapi.json", ApiDoc::openapi()))
-        .layer(CorsLayer::permissive())
+        .layer(cors)
         .layer(TraceLayer::new_for_http());
 
     let listener = tokio::net::TcpListener::bind(&config.listen_addr)

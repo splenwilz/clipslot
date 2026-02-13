@@ -10,7 +10,7 @@ use axum::{
 };
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use futures::{SinkExt, StreamExt};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, mpsc};
 use uuid::Uuid;
 
 use crate::middleware::auth::validate_token;
@@ -57,6 +57,9 @@ async fn handle_socket(socket: WebSocket, state: AppState, user_id: Uuid, device
     let tx = get_or_create_channel(&state, user_id);
     let mut rx = tx.subscribe();
 
+    // Direct channel for messages targeted at this specific connection (errors, acks)
+    let (direct_tx, mut direct_rx) = mpsc::channel::<String>(32);
+
     // Update device last_seen
     let _ = sqlx::query("UPDATE devices SET last_seen = NOW() WHERE id = $1")
         .bind(device_id)
@@ -65,14 +68,28 @@ async fn handle_socket(socket: WebSocket, state: AppState, user_id: Uuid, device
 
     tracing::info!("WebSocket connected: user={}, device={}", user_id, device_id);
 
-    // Task: forward broadcast messages to this client (skip own messages)
+    // Task: forward broadcast messages and direct messages to this client
     let send_task = tokio::spawn(async move {
-        while let Ok((origin_device, payload)) = rx.recv().await {
-            if origin_device == device_id {
-                continue;
-            }
-            if sender.send(Message::Text(payload.into())).await.is_err() {
-                break;
+        loop {
+            tokio::select! {
+                result = rx.recv() => {
+                    match result {
+                        Ok((origin_device, payload)) => {
+                            if origin_device == device_id {
+                                continue;
+                            }
+                            if sender.send(Message::Text(payload.into())).await.is_err() {
+                                break;
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+                Some(payload) = direct_rx.recv() => {
+                    if sender.send(Message::Text(payload.into())).await.is_err() {
+                        break;
+                    }
+                }
             }
         }
     });
@@ -84,7 +101,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, user_id: Uuid, device
         while let Some(Ok(msg)) = receiver.next().await {
             match msg {
                 Message::Text(text) => {
-                    handle_ws_message(&state_clone, user_id, device_id, &text, &tx_clone).await;
+                    handle_ws_message(&state_clone, user_id, device_id, &text, &tx_clone, &direct_tx).await;
                 }
                 Message::Close(_) => break,
                 _ => {}
@@ -110,6 +127,7 @@ async fn handle_ws_message(
     device_id: Uuid,
     text: &str,
     tx: &broadcast::Sender<(Uuid, String)>,
+    direct_tx: &mpsc::Sender<String>,
 ) {
     let msg: WsMessage = match serde_json::from_str(text) {
         Ok(m) => m,
@@ -117,7 +135,7 @@ async fn handle_ws_message(
             let err_msg = WsMessage::Error {
                 message: format!("Invalid message: {}", e),
             };
-            let _ = tx.send((device_id, serde_json::to_string(&err_msg).unwrap()));
+            let _ = direct_tx.send(serde_json::to_string(&err_msg).unwrap()).await;
             return;
         }
     };
@@ -132,7 +150,7 @@ async fn handle_ws_message(
                 let err_msg = WsMessage::Error {
                     message: "Invalid slot number".to_string(),
                 };
-                let _ = tx.send((device_id, serde_json::to_string(&err_msg).unwrap()));
+                let _ = direct_tx.send(serde_json::to_string(&err_msg).unwrap()).await;
                 return;
             }
 
@@ -142,7 +160,7 @@ async fn handle_ws_message(
                     let err_msg = WsMessage::Error {
                         message: "Invalid base64 blob".to_string(),
                     };
-                    let _ = tx.send((device_id, serde_json::to_string(&err_msg).unwrap()));
+                    let _ = direct_tx.send(serde_json::to_string(&err_msg).unwrap()).await;
                     return;
                 }
             };
@@ -185,7 +203,7 @@ async fn handle_ws_message(
                     let err_msg = WsMessage::Error {
                         message: "Invalid base64 blob".to_string(),
                     };
-                    let _ = tx.send((device_id, serde_json::to_string(&err_msg).unwrap()));
+                    let _ = direct_tx.send(serde_json::to_string(&err_msg).unwrap()).await;
                     return;
                 }
             };
