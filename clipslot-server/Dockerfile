@@ -3,8 +3,6 @@ FROM rust:1.84-bookworm AS builder
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
-COPY .sqlx ./.sqlx
-ENV SQLX_OFFLINE=true
 RUN cargo build --release
 
 # Runtime stage
