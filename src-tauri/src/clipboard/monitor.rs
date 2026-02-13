@@ -61,6 +61,7 @@ impl ClipboardMonitor {
     ) {
         let paused = self.paused.clone();
         let skip_next = self.skip_next.clone();
+        let rt_handle = tokio::runtime::Handle::current();
 
         std::thread::spawn(move || {
             let mut last_hash: Option<String> = None;
@@ -129,7 +130,7 @@ impl ClipboardMonitor {
                             let item_id = item.id.clone();
                             let db_ref = db.clone();
                             let sync_ref = sync.clone();
-                            tokio::spawn(async move {
+                            rt_handle.spawn(async move {
                                 if let Ok(Some((encrypted, hash))) =
                                     db_ref.get_item_encrypted(&item_id)
                                 {

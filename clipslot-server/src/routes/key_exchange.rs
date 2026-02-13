@@ -83,6 +83,10 @@ async fn redeem_link_code(
 ) -> Result<Json<RedeemCodeResponse>, (StatusCode, Json<ApiError>)> {
     let code = req.code.trim().to_string();
 
+    if code.len() != 6 || !code.chars().all(|c| c.is_ascii_digit()) {
+        return Err(err(StatusCode::BAD_REQUEST, "Code must be a 6-digit number"));
+    }
+
     let entry = state.link_codes.remove(&code);
 
     match entry {

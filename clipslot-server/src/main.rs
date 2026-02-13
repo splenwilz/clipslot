@@ -9,7 +9,7 @@ use std::sync::Arc;
 use dashmap::DashMap;
 use sqlx::postgres::PgPoolOptions;
 use tokio::sync::broadcast;
-use axum::http::{HeaderValue, Method};
+use axum::http::{header, HeaderValue, Method};
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 use utoipa::OpenApi;
@@ -114,7 +114,12 @@ async fn main() {
                 Method::DELETE,
                 Method::OPTIONS,
             ])
-            .allow_headers(tower_http::cors::Any)
+            .allow_headers([
+                header::AUTHORIZATION,
+                header::CONTENT_TYPE,
+                header::ACCEPT,
+                header::ORIGIN,
+            ])
             .allow_credentials(true)
     };
 

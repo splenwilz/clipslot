@@ -180,6 +180,10 @@ async fn handle_ws_message(
 
             if let Err(e) = result {
                 tracing::error!("Failed to save slot update: {}", e);
+                let err_msg = WsMessage::Error {
+                    message: format!("Failed to save slot update: {}", e),
+                };
+                let _ = direct_tx.send(serde_json::to_string(&err_msg).unwrap()).await;
                 return;
             }
 
@@ -233,6 +237,10 @@ async fn handle_ws_message(
                 }
                 Err(e) => {
                     tracing::error!("Failed to save history push: {}", e);
+                    let err_msg = WsMessage::Error {
+                        message: format!("Failed to save history: {}", e),
+                    };
+                    let _ = direct_tx.send(serde_json::to_string(&err_msg).unwrap()).await;
                 }
                 _ => {} // Dedup — item already exists
             }

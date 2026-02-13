@@ -295,7 +295,7 @@ impl SyncManager {
                         id,
                         encrypted_blob,
                         content_hash,
-                        ..
+                        device_id,
                     } => {
                         // Decode base64 blob and save as a synced history item
                         if let Ok(blob_bytes) = BASE64.decode(&encrypted_blob) {
@@ -305,7 +305,7 @@ impl SyncManager {
                                     &id.to_string(),
                                     &enc_str,
                                     &content_hash,
-                                    &device_id_str,
+                                    &device_id.to_string(),
                                     now,
                                 ) {
                                     eprintln!(
