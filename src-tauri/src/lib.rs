@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use clipboard::item::ClipboardItem;
 use clipboard::monitor::ClipboardMonitor;
+use slots::SlotInfo;
 use storage::database::Database;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -54,7 +55,9 @@ fn delete_history_item(
 
 #[tauri::command]
 fn clear_history(db: tauri::State<'_, Arc<Database>>) -> Result<u32, String> {
-    db.clear_history().map_err(|e| e.to_string())
+    let result = db.clear_history().map_err(|e| e.to_string());
+    println!("[ClipSlot] clear_history called, result: {:?}", result);
+    result
 }
 
 #[tauri::command]
@@ -75,13 +78,65 @@ fn copy_to_clipboard(
         .map_err(|e| e.to_string())
 }
 
+// ── Slot Commands ────────────────────────────────────────────────────────────
+
+#[tauri::command]
+fn save_to_slot(
+    app: tauri::AppHandle,
+    db: tauri::State<'_, Arc<Database>>,
+    slot_number: u32,
+) -> Result<SlotInfo, String> {
+    use tauri_plugin_clipboard_manager::ClipboardExt;
+    let text = app
+        .clipboard()
+        .read_text()
+        .map_err(|e| e.to_string())?;
+    if text.is_empty() {
+        return Err("Clipboard is empty".to_string());
+    }
+    let device_id = get_or_create_device_id();
+    let item = ClipboardItem::new(text, &device_id);
+    db.save_to_slot(slot_number, &item)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_slot(
+    db: tauri::State<'_, Arc<Database>>,
+    slot_number: u32,
+) -> Result<SlotInfo, String> {
+    db.get_slot(slot_number).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_all_slots(db: tauri::State<'_, Arc<Database>>) -> Result<Vec<SlotInfo>, String> {
+    db.get_all_slots().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn clear_slot(
+    db: tauri::State<'_, Arc<Database>>,
+    slot_number: u32,
+) -> Result<bool, String> {
+    db.clear_slot(slot_number).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn rename_slot(
+    db: tauri::State<'_, Arc<Database>>,
+    slot_number: u32,
+    name: String,
+) -> Result<bool, String> {
+    db.rename_slot(slot_number, &name)
+        .map_err(|e| e.to_string())
+}
+
 // ── App Entry ───────────────────────────────────────────────────────────────
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![
@@ -91,10 +146,27 @@ pub fn run() {
             clear_history,
             get_history_count,
             copy_to_clipboard,
+            save_to_slot,
+            get_slot,
+            get_all_slots,
+            clear_slot,
+            rename_slot,
         ])
         .setup(|app| {
             #[cfg(target_os = "macos")]
-            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+            {
+                app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+
+                // Check macOS Accessibility permissions (needed for global shortcuts)
+                extern "C" {
+                    fn AXIsProcessTrusted() -> bool;
+                }
+                let trusted = unsafe { AXIsProcessTrusted() };
+                if !trusted {
+                    eprintln!("[ClipSlot] WARNING: Accessibility not granted — shortcuts won't work.");
+                    eprintln!("[ClipSlot] Grant access in: System Settings > Privacy & Security > Accessibility");
+                }
+            }
 
             // Initialize database
             let data_dir = app
@@ -113,6 +185,9 @@ pub fn run() {
             let monitor = Arc::new(ClipboardMonitor::new());
             monitor.start(app.handle().clone(), device_id, db);
             app.manage(monitor);
+
+            // Start keyboard listener for slot shortcuts (Cmd+Ctrl+1-5)
+            slots::manager::start_shortcut_listener(app.handle().clone());
 
             // Build the tray menu
             let quit = MenuItem::with_id(app, "quit", "Quit ClipSlot", true, None::<&str>)?;

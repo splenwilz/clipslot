@@ -76,8 +76,9 @@ function App() {
 
   const handleClear = async () => {
     try {
-      await invoke("clear_history");
-      loadHistory();
+      const deleted = await invoke<number>("clear_history");
+      console.log("[ClipSlot] Cleared", deleted, "items");
+      await loadHistory();
     } catch (e) {
       console.error("Failed to clear:", e);
     }
