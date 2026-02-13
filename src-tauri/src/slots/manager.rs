@@ -10,8 +10,8 @@ use crate::clipboard::monitor::ClipboardMonitor;
 use crate::storage::database::Database;
 
 /// Start keyboard polling for slot shortcuts.
-/// - Save:  Cmd+Ctrl+1-5
-/// - Paste: Cmd+Option+1-5
+/// macOS:   Save = Cmd+Ctrl+1-5,    Paste = Cmd+Option+1-5
+/// Windows: Save = Ctrl+Shift+1-5,  Paste = Alt+Shift+1-5
 pub fn start_shortcut_listener(app_handle: AppHandle<Wry>) {
     std::thread::spawn(move || {
         use device_query::{DeviceQuery, DeviceState, Keycode};
@@ -27,10 +27,13 @@ pub fn start_shortcut_listener(app_handle: AppHandle<Wry>) {
 
             let keys = device_state.get_keys();
 
-            let cmd_held = keys.contains(&Keycode::Command);
             let ctrl_held =
                 keys.contains(&Keycode::LControl) || keys.contains(&Keycode::RControl);
-            let option_held = keys.contains(&Keycode::LOption) || keys.contains(&Keycode::RAlt);
+            #[allow(unused_variables)]
+            let shift_held =
+                keys.contains(&Keycode::LShift) || keys.contains(&Keycode::RShift);
+            #[allow(unused_variables)]
+            let alt_held = keys.contains(&Keycode::LAlt) || keys.contains(&Keycode::RAlt);
 
             // Determine which number key (1-5) is pressed
             let slot_number = if keys.contains(&Keycode::Key1) {
@@ -47,11 +50,32 @@ pub fn start_shortcut_listener(app_handle: AppHandle<Wry>) {
                 None
             };
 
-            // Save to slot: Cmd+Ctrl+1-5 (without Option)
-            if cmd_held && ctrl_held && !option_held {
+            // Platform-specific modifier detection
+            #[cfg(target_os = "macos")]
+            let (save_combo, paste_combo) = {
+                let cmd_held = keys.contains(&Keycode::Command);
+                let option_held = keys.contains(&Keycode::LOption) || keys.contains(&Keycode::RAlt);
+                // Save: Cmd+Ctrl+N (without Option)
+                let save = cmd_held && ctrl_held && !option_held;
+                // Paste: Cmd+Option+N (without Ctrl)
+                let paste = cmd_held && option_held && !ctrl_held;
+                (save, paste)
+            };
+
+            #[cfg(not(target_os = "macos"))]
+            let (save_combo, paste_combo) = {
+                // Save: Ctrl+Shift+N (without Alt)
+                let save = ctrl_held && shift_held && !alt_held;
+                // Paste: Alt+Shift+N (without Ctrl)
+                let paste = alt_held && shift_held && !ctrl_held;
+                (save, paste)
+            };
+
+            // Save to slot
+            if save_combo {
                 if slot_number != last_save_slot {
                     if let Some(n) = slot_number {
-                        println!("[ClipSlot] Detected Cmd+Ctrl+{}", n);
+                        println!("[ClipSlot] Detected save-to-slot shortcut: slot {}", n);
                         handle_save_to_slot(&app_handle, n);
                     }
                     last_save_slot = slot_number;
@@ -60,11 +84,11 @@ pub fn start_shortcut_listener(app_handle: AppHandle<Wry>) {
                 last_save_slot = None;
             }
 
-            // Paste from slot: Cmd+Option+1-5 (without Ctrl)
-            if cmd_held && option_held && !ctrl_held {
+            // Paste from slot
+            if paste_combo {
                 if slot_number != last_paste_slot {
                     if let Some(n) = slot_number {
-                        println!("[ClipSlot] Detected Cmd+Option+{}", n);
+                        println!("[ClipSlot] Detected paste-from-slot shortcut: slot {}", n);
                         handle_paste_from_slot(&app_handle, n);
                     }
                     last_paste_slot = slot_number;
@@ -281,8 +305,91 @@ fn simulate_paste() -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
 fn simulate_paste() -> Result<(), String> {
+    use std::mem;
+
+    #[repr(C)]
+    struct KeybdInput {
+        r#type: u32,
+        vk: u16,
+        scan: u16,
+        flags: u32,
+        time: u32,
+        extra_info: usize,
+        _pad: [u8; 8], // Padding to match INPUT union size
+    }
+
+    extern "system" {
+        fn SendInput(count: u32, inputs: *const KeybdInput, size: i32) -> u32;
+    }
+
+    const INPUT_KEYBOARD: u32 = 1;
+    const KEYEVENTF_KEYUP: u32 = 0x0002;
+    const VK_CONTROL: u16 = 0x11;
+    const VK_V: u16 = 0x56;
+
+    let inputs = [
+        // Ctrl down
+        KeybdInput {
+            r#type: INPUT_KEYBOARD,
+            vk: VK_CONTROL,
+            scan: 0,
+            flags: 0,
+            time: 0,
+            extra_info: 0,
+            _pad: [0; 8],
+        },
+        // V down
+        KeybdInput {
+            r#type: INPUT_KEYBOARD,
+            vk: VK_V,
+            scan: 0,
+            flags: 0,
+            time: 0,
+            extra_info: 0,
+            _pad: [0; 8],
+        },
+        // V up
+        KeybdInput {
+            r#type: INPUT_KEYBOARD,
+            vk: VK_V,
+            scan: 0,
+            flags: KEYEVENTF_KEYUP,
+            time: 0,
+            extra_info: 0,
+            _pad: [0; 8],
+        },
+        // Ctrl up
+        KeybdInput {
+            r#type: INPUT_KEYBOARD,
+            vk: VK_CONTROL,
+            scan: 0,
+            flags: KEYEVENTF_KEYUP,
+            time: 0,
+            extra_info: 0,
+            _pad: [0; 8],
+        },
+    ];
+
+    let sent = unsafe {
+        SendInput(
+            4,
+            inputs.as_ptr(),
+            mem::size_of::<KeybdInput>() as i32,
+        )
+    };
+
+    if sent == 4 {
+        Ok(())
+    } else {
+        Err("SendInput failed to send all key events".to_string())
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn simulate_paste() -> Result<(), String> {
+    // Linux: xdotool or similar would be needed
     Ok(())
 }
 

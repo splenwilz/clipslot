@@ -369,7 +369,15 @@ async fn sync_login(
     email: String,
     password: String,
 ) -> Result<sync::types::SyncState, String> {
-    sync.login(&email, &password).await
+    let state = sync.login(&email, &password).await?;
+    // Auto-sync and connect WebSocket after login
+    if let Err(e) = sync.start_sync().await {
+        eprintln!("[ClipSlot] Auto-sync after login failed: {}", e);
+    }
+    if let Err(e) = sync.connect_ws().await {
+        eprintln!("[ClipSlot] WS connect after login failed: {}", e);
+    }
+    Ok(state)
 }
 
 #[tauri::command]
@@ -378,7 +386,15 @@ async fn sync_register(
     email: String,
     password: String,
 ) -> Result<sync::types::SyncState, String> {
-    sync.register(&email, &password).await
+    let state = sync.register(&email, &password).await?;
+    // Auto-sync and connect WebSocket after registration
+    if let Err(e) = sync.start_sync().await {
+        eprintln!("[ClipSlot] Auto-sync after register failed: {}", e);
+    }
+    if let Err(e) = sync.connect_ws().await {
+        eprintln!("[ClipSlot] WS connect after register failed: {}", e);
+    }
+    Ok(state)
 }
 
 #[tauri::command]
@@ -402,7 +418,12 @@ async fn get_linked_devices(
 
 #[tauri::command]
 async fn force_sync(sync: tauri::State<'_, Arc<SyncManager>>) -> Result<String, String> {
-    sync.start_sync().await
+    let result = sync.start_sync().await?;
+    // Ensure WebSocket is connected for real-time sync
+    if let Err(e) = sync.connect_ws().await {
+        eprintln!("[ClipSlot] WS connect after force sync failed: {}", e);
+    }
+    Ok(result)
 }
 
 #[tauri::command]
@@ -509,6 +530,23 @@ pub fn run() {
             // Initialize sync manager
             let sync_manager = Arc::new(SyncManager::new(db.clone()));
             app.manage(sync_manager.clone());
+
+            // Auto-sync + connect WebSocket if already authenticated
+            if sync_manager.has_auth() {
+                let sm = sync_manager.clone();
+                std::thread::spawn(move || {
+                    let rt = tokio::runtime::Runtime::new()
+                        .expect("Failed to create sync runtime");
+                    rt.block_on(async {
+                        if let Err(e) = sm.start_sync().await {
+                            eprintln!("[ClipSlot] Auto-sync on startup failed: {}", e);
+                        }
+                        if let Err(e) = sm.connect_ws().await {
+                            eprintln!("[ClipSlot] WS connect on startup failed: {}", e);
+                        }
+                    });
+                });
+            }
 
             // Start clipboard monitoring
             let device_id = get_or_create_device_id();
