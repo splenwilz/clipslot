@@ -1,10 +1,24 @@
 :root {
+  --bg-primary: #f8f8f8;
+  --bg-secondary: #ffffff;
+  --bg-hover: #e8e8e8;
+  --bg-selected: #dbeafe;
+  --bg-copied: #d4edda;
+  --text-primary: #1a1a1a;
+  --text-secondary: #666;
+  --text-muted: #999;
+  --border-color: #ddd;
+  --accent: #007aff;
+  --danger: #ff4444;
+  --success: #28a745;
+  --shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica,
     Arial, sans-serif;
   font-size: 14px;
   line-height: 1.5;
-  color: #1a1a1a;
-  background-color: #f8f8f8;
+  color: var(--text-primary);
+  background-color: var(--bg-primary);
   -webkit-font-smoothing: antialiased;
 }
 
@@ -19,6 +33,7 @@
   flex-direction: column;
   height: 100vh;
   overflow: hidden;
+  outline: none;
 }
 
 .history-header {
@@ -35,7 +50,7 @@
 
 .count {
   font-size: 12px;
-  color: #888;
+  color: var(--text-muted);
 }
 
 .search-bar {
@@ -45,15 +60,16 @@
 .search-bar input {
   width: 100%;
   padding: 8px 12px;
-  border: 1px solid #ddd;
+  border: 1px solid var(--border-color);
   border-radius: 6px;
   font-size: 13px;
   outline: none;
-  background: #fff;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
 }
 
 .search-bar input:focus {
-  border-color: #007aff;
+  border-color: var(--accent);
   box-shadow: 0 0 0 2px rgba(0, 122, 255, 0.15);
 }
 
@@ -66,7 +82,7 @@
 .empty-state {
   text-align: center;
   padding: 40px 16px;
-  color: #999;
+  color: var(--text-muted);
   font-size: 13px;
 }
 
@@ -79,11 +95,15 @@
 }
 
 .history-item:hover {
-  background-color: #e8e8e8;
+  background-color: var(--bg-hover);
+}
+
+.history-item.selected {
+  background-color: var(--bg-selected);
 }
 
 .history-item.copied {
-  background-color: #d4edda;
+  background-color: var(--bg-copied);
 }
 
 .item-content {
@@ -91,7 +111,7 @@
   line-height: 1.4;
   word-break: break-word;
   white-space: pre-wrap;
-  color: #333;
+  color: var(--text-primary);
   margin-bottom: 4px;
 }
 
@@ -100,11 +120,11 @@
   align-items: center;
   gap: 8px;
   font-size: 11px;
-  color: #999;
+  color: var(--text-muted);
 }
 
 .copied-badge {
-  color: #28a745;
+  color: var(--success);
   font-weight: 500;
 }
 
@@ -112,7 +132,7 @@
   margin-left: auto;
   background: none;
   border: none;
-  color: #ccc;
+  color: var(--border-color);
   cursor: pointer;
   font-size: 12px;
   padding: 2px 6px;
@@ -121,22 +141,22 @@
 }
 
 .delete-btn:hover {
-  color: #ff4444;
+  color: var(--danger);
   background: rgba(255, 68, 68, 0.1);
 }
 
 .history-footer {
   padding: 12px 16px;
-  border-top: 1px solid #eee;
+  border-top: 1px solid var(--border-color);
 }
 
 .clear-btn {
   width: 100%;
   padding: 8px;
   background: none;
-  border: 1px solid #ddd;
+  border: 1px solid var(--border-color);
   border-radius: 6px;
-  color: #666;
+  color: var(--text-secondary);
   cursor: pointer;
   font-size: 13px;
 }
@@ -147,50 +167,60 @@
   color: #c33;
 }
 
+/* Context Menu */
+.context-menu {
+  position: fixed;
+  z-index: 1000;
+  min-width: 160px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 4px 0;
+  box-shadow: var(--shadow);
+}
+
+.context-menu-item {
+  padding: 6px 14px;
+  font-size: 13px;
+  cursor: pointer;
+  color: var(--text-primary);
+}
+
+.context-menu-item:hover {
+  background-color: var(--accent);
+  color: #fff;
+}
+
+.context-menu-item.danger {
+  color: var(--danger);
+}
+
+.context-menu-item.danger:hover {
+  background-color: var(--danger);
+  color: #fff;
+}
+
+.context-menu-separator {
+  height: 1px;
+  margin: 4px 0;
+  background: var(--border-color);
+}
+
 @media (prefers-color-scheme: dark) {
   :root {
-    color: #e8e8e8;
-    background-color: #1e1e1e;
-  }
-
-  .search-bar input {
-    background: #2a2a2a;
-    border-color: #444;
-    color: #e8e8e8;
-  }
-
-  .search-bar input:focus {
-    border-color: #007aff;
-  }
-
-  .history-item:hover {
-    background-color: #2a2a2a;
-  }
-
-  .history-item.copied {
-    background-color: #1a3a1a;
-  }
-
-  .item-content {
-    color: #ddd;
-  }
-
-  .delete-btn {
-    color: #555;
-  }
-
-  .delete-btn:hover {
-    color: #ff6666;
-    background: rgba(255, 68, 68, 0.15);
-  }
-
-  .history-footer {
-    border-top-color: #333;
-  }
-
-  .clear-btn {
-    border-color: #444;
-    color: #999;
+    --bg-primary: #1e1e1e;
+    --bg-secondary: #2a2a2a;
+    --bg-hover: #333;
+    --bg-selected: #1a3a5c;
+    --bg-copied: #1a3a1a;
+    --text-primary: #e8e8e8;
+    --text-secondary: #999;
+    --text-muted: #666;
+    --border-color: #444;
+    --accent: #007aff;
+    --danger: #ff6666;
+    --success: #4caf50;
+    --shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
   }
 
   .clear-btn:hover {

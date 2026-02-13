@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use tauri::{AppHandle, Manager, Wry};
+use tauri::{AppHandle, Emitter, Manager, Wry};
 use tauri_plugin_clipboard_manager::ClipboardExt;
 use tauri_plugin_notification::NotificationExt;
 
@@ -76,7 +76,7 @@ pub fn start_shortcut_listener(app_handle: AppHandle<Wry>) {
     });
 }
 
-fn handle_save_to_slot(app: &AppHandle<Wry>, slot_number: u32) {
+pub fn handle_save_to_slot(app: &AppHandle<Wry>, slot_number: u32) {
     // Read current clipboard content
     let text = match app.clipboard().read_text() {
         Ok(t) if !t.is_empty() => t,
@@ -131,6 +131,9 @@ fn handle_save_to_slot(app: &AppHandle<Wry>, slot_number: u32) {
                 Ok(_) => println!("[ClipSlot] Notification sent"),
                 Err(e) => eprintln!("[ClipSlot] Notification failed: {}", e),
             }
+
+            // Signal tray menu to refresh
+            let _ = app.emit("slot-changed", ());
         }
         Err(e) => {
             eprintln!("[ClipSlot] Failed to save to slot {}: {}", slot_number, e);
@@ -144,7 +147,7 @@ fn handle_save_to_slot(app: &AppHandle<Wry>, slot_number: u32) {
     }
 }
 
-fn handle_paste_from_slot(app: &AppHandle<Wry>, slot_number: u32) {
+pub fn handle_paste_from_slot(app: &AppHandle<Wry>, slot_number: u32) {
     let db = app.state::<Arc<Database>>();
 
     // Read slot content from DB
@@ -271,6 +274,11 @@ fn simulate_paste() -> Result<(), String> {
         CFRelease(source);
     }
 
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn simulate_paste() -> Result<(), String> {
     Ok(())
 }
 

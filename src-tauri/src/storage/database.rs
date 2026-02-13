@@ -59,10 +59,18 @@ impl Database {
             ",
         )?;
 
-        // Set default history limit if not present
+        // Set default settings if not present
         conn.execute(
             "INSERT OR IGNORE INTO app_config (key, value) VALUES ('history_limit', ?1)",
             params![DEFAULT_HISTORY_LIMIT.to_string()],
+        )?;
+        conn.execute(
+            "INSERT OR IGNORE INTO app_config (key, value) VALUES ('auto_clear_on_quit', 'false')",
+            [],
+        )?;
+        conn.execute(
+            "INSERT OR IGNORE INTO app_config (key, value) VALUES ('excluded_apps', '[]')",
+            [],
         )?;
 
         // Pre-populate 5 empty slots
@@ -340,6 +348,53 @@ impl Database {
             params![name, slot_number],
         )?;
         Ok(rows > 0)
+    }
+
+    /// Promote an existing clipboard item to a slot by item ID.
+    pub fn save_existing_item_to_slot(
+        &self,
+        slot_number: u32,
+        item_id: &str,
+    ) -> SqliteResult<SlotInfo> {
+        let conn = self.conn.lock().unwrap();
+
+        // Mark the item as promoted
+        conn.execute(
+            "UPDATE clipboard_items SET is_promoted = 1 WHERE id = ?1",
+            params![item_id],
+        )?;
+
+        // Update the slot
+        let now = chrono::Utc::now().timestamp_millis();
+        conn.execute(
+            "UPDATE slots SET item_id = ?1, updated_at = ?2 WHERE slot_number = ?3",
+            params![item_id, now, slot_number],
+        )?;
+
+        // Return the updated slot info
+        drop(conn);
+        self.get_slot(slot_number)
+    }
+
+    // ── Settings ─────────────────────────────────────────────────────────
+
+    pub fn get_setting(&self, key: &str) -> Option<String> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT value FROM app_config WHERE key = ?1",
+            params![key],
+            |row| row.get(0),
+        )
+        .ok()
+    }
+
+    pub fn set_setting(&self, key: &str, value: &str) -> SqliteResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO app_config (key, value) VALUES (?1, ?2)",
+            params![key, value],
+        )?;
+        Ok(())
     }
 
     // ── History Limit ───────────────────────────────────────────────────

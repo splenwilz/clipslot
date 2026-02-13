@@ -10,9 +10,9 @@ use clipboard::item::ClipboardItem;
 use clipboard::monitor::ClipboardMonitor;
 use slots::SlotInfo;
 use storage::database::Database;
-use tauri::menu::{Menu, MenuItem};
-use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::menu::{Menu, MenuItemBuilder, PredefinedMenuItem};
+use tauri::tray::{TrayIcon, TrayIconBuilder};
+use tauri::{AppHandle, Listener, Manager, WebviewUrl, WebviewWindowBuilder, Wry};
 
 fn get_or_create_device_id() -> String {
     let hostname = hostname::get()
@@ -22,8 +22,124 @@ fn get_or_create_device_id() -> String {
     id.to_string()
 }
 
-/// Stored in Tauri managed state so tray menu events can update the pause label.
-struct PauseMenuItem(MenuItem<tauri::Wry>);
+/// Stored in Tauri managed state so we can update the tray menu dynamically.
+struct TrayIconHandle(TrayIcon);
+
+// ── Tray Menu ────────────────────────────────────────────────────────────────
+
+fn build_tray_menu(app: &AppHandle, slots: &[SlotInfo], is_paused: bool) -> tauri::Result<Menu<Wry>> {
+    let mut items: Vec<Box<dyn tauri::menu::IsMenuItem<Wry>>> = Vec::new();
+
+    // Slot items
+    for slot in slots {
+        let label = if slot.is_empty {
+            format!("{}: (empty)", slot.name)
+        } else {
+            let preview = slot.content_preview.as_deref().unwrap_or("");
+            let short: String = preview.chars().take(30).collect();
+            if preview.chars().count() > 30 {
+                format!("{}: {}...", slot.name, short)
+            } else {
+                format!("{}: {}", slot.name, short)
+            }
+        };
+        let id = format!("paste_slot_{}", slot.slot_number);
+        let item = MenuItemBuilder::with_id(id, label)
+            .enabled(!slot.is_empty)
+            .build(app)?;
+        items.push(Box::new(item));
+    }
+
+    items.push(Box::new(PredefinedMenuItem::separator(app)?));
+
+    let show_history = MenuItemBuilder::with_id("show_history", "Show History").build(app)?;
+    items.push(Box::new(show_history));
+
+    items.push(Box::new(PredefinedMenuItem::separator(app)?));
+
+    let pause_label = if is_paused { "Resume Monitoring" } else { "Pause Monitoring" };
+    let pause = MenuItemBuilder::with_id("pause", pause_label).build(app)?;
+    items.push(Box::new(pause));
+
+    let settings = MenuItemBuilder::with_id("settings", "Settings...").build(app)?;
+    items.push(Box::new(settings));
+
+    items.push(Box::new(PredefinedMenuItem::separator(app)?));
+
+    let quit = MenuItemBuilder::with_id("quit", "Quit ClipSlot").build(app)?;
+    items.push(Box::new(quit));
+
+    let refs: Vec<&dyn tauri::menu::IsMenuItem<Wry>> = items.iter().map(|b| b.as_ref()).collect();
+    Menu::with_items(app, &refs)
+}
+
+fn refresh_tray_menu(app: &AppHandle) {
+    let db = app.state::<Arc<Database>>();
+    let monitor = app.state::<Arc<ClipboardMonitor>>();
+    let is_paused = monitor.is_paused();
+
+    let slots = db.get_all_slots().unwrap_or_default();
+    match build_tray_menu(app, &slots, is_paused) {
+        Ok(menu) => {
+            let tray = app.state::<TrayIconHandle>();
+            let _ = tray.0.set_menu(Some(menu));
+        }
+        Err(e) => eprintln!("[ClipSlot] Failed to rebuild tray menu: {}", e),
+    }
+}
+
+fn handle_tray_menu_event(app: &AppHandle, event_id: &str) {
+    match event_id {
+        "quit" => {
+            app.exit(0);
+        }
+        "show_history" => {
+            if let Some(window) = app.get_webview_window("history") {
+                let _ = window.show();
+                let _ = window.set_focus();
+            } else {
+                let _ = WebviewWindowBuilder::new(
+                    app,
+                    "history",
+                    WebviewUrl::App("index.html".into()),
+                )
+                .title("ClipSlot History")
+                .inner_size(480.0, 600.0)
+                .resizable(true)
+                .center()
+                .build();
+            }
+        }
+        "pause" => {
+            let monitor = app.state::<Arc<ClipboardMonitor>>();
+            monitor.toggle_pause();
+            refresh_tray_menu(app);
+        }
+        "settings" => {
+            if let Some(window) = app.get_webview_window("settings") {
+                let _ = window.show();
+                let _ = window.set_focus();
+            } else {
+                let _ = WebviewWindowBuilder::new(
+                    app,
+                    "settings",
+                    WebviewUrl::App("index.html?page=settings".into()),
+                )
+                .title("ClipSlot Settings")
+                .inner_size(560.0, 480.0)
+                .resizable(true)
+                .center()
+                .build();
+            }
+        }
+        id if id.starts_with("paste_slot_") => {
+            if let Ok(slot_num) = id.strip_prefix("paste_slot_").unwrap().parse::<u32>() {
+                slots::manager::handle_paste_from_slot(app, slot_num);
+            }
+        }
+        _ => {}
+    }
+}
 
 // ── Tauri Commands ──────────────────────────────────────────────────────────
 
@@ -55,9 +171,7 @@ fn delete_history_item(
 
 #[tauri::command]
 fn clear_history(db: tauri::State<'_, Arc<Database>>) -> Result<u32, String> {
-    let result = db.clear_history().map_err(|e| e.to_string());
-    println!("[ClipSlot] clear_history called, result: {:?}", result);
-    result
+    db.clear_history().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -96,8 +210,11 @@ fn save_to_slot(
     }
     let device_id = get_or_create_device_id();
     let item = ClipboardItem::new(text, &device_id);
-    db.save_to_slot(slot_number, &item)
-        .map_err(|e| e.to_string())
+    let result = db
+        .save_to_slot(slot_number, &item)
+        .map_err(|e| e.to_string())?;
+    refresh_tray_menu(&app);
+    Ok(result)
 }
 
 #[tauri::command]
@@ -115,20 +232,77 @@ fn get_all_slots(db: tauri::State<'_, Arc<Database>>) -> Result<Vec<SlotInfo>, S
 
 #[tauri::command]
 fn clear_slot(
+    app: tauri::AppHandle,
     db: tauri::State<'_, Arc<Database>>,
     slot_number: u32,
 ) -> Result<bool, String> {
-    db.clear_slot(slot_number).map_err(|e| e.to_string())
+    let result = db.clear_slot(slot_number).map_err(|e| e.to_string())?;
+    refresh_tray_menu(&app);
+    Ok(result)
 }
 
 #[tauri::command]
 fn rename_slot(
+    app: tauri::AppHandle,
     db: tauri::State<'_, Arc<Database>>,
     slot_number: u32,
     name: String,
 ) -> Result<bool, String> {
-    db.rename_slot(slot_number, &name)
-        .map_err(|e| e.to_string())
+    let result = db
+        .rename_slot(slot_number, &name)
+        .map_err(|e| e.to_string())?;
+    refresh_tray_menu(&app);
+    Ok(result)
+}
+
+// ── Settings Commands ────────────────────────────────────────────────────────
+
+#[tauri::command]
+fn get_settings(
+    db: tauri::State<'_, Arc<Database>>,
+) -> Result<std::collections::HashMap<String, String>, String> {
+    let keys = ["history_limit", "auto_clear_on_quit", "excluded_apps"];
+    let mut map = std::collections::HashMap::new();
+    for key in keys {
+        if let Some(val) = db.get_setting(key) {
+            map.insert(key.to_string(), val);
+        }
+    }
+    Ok(map)
+}
+
+#[tauri::command]
+fn update_setting(
+    db: tauri::State<'_, Arc<Database>>,
+    key: String,
+    value: String,
+) -> Result<bool, String> {
+    db.set_setting(&key, &value).map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+#[tauri::command]
+fn toggle_monitoring(
+    app: tauri::AppHandle,
+    monitor: tauri::State<'_, Arc<ClipboardMonitor>>,
+) -> Result<bool, String> {
+    let is_paused = monitor.toggle_pause();
+    refresh_tray_menu(&app);
+    Ok(is_paused)
+}
+
+#[tauri::command]
+fn save_item_to_slot(
+    app: tauri::AppHandle,
+    db: tauri::State<'_, Arc<Database>>,
+    item_id: String,
+    slot_number: u32,
+) -> Result<SlotInfo, String> {
+    let result = db
+        .save_existing_item_to_slot(slot_number, &item_id)
+        .map_err(|e| e.to_string())?;
+    refresh_tray_menu(&app);
+    Ok(result)
 }
 
 // ── App Entry ───────────────────────────────────────────────────────────────
@@ -151,13 +325,16 @@ pub fn run() {
             get_all_slots,
             clear_slot,
             rename_slot,
+            get_settings,
+            update_setting,
+            toggle_monitoring,
+            save_item_to_slot,
         ])
         .setup(|app| {
             #[cfg(target_os = "macos")]
             {
                 app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
-                // Check macOS Accessibility permissions (needed for global shortcuts)
                 extern "C" {
                     fn AXIsProcessTrusted() -> bool;
                 }
@@ -183,74 +360,32 @@ pub fn run() {
             println!("[ClipSlot] Device ID: {}", device_id);
 
             let monitor = Arc::new(ClipboardMonitor::new());
-            monitor.start(app.handle().clone(), device_id, db);
+            monitor.start(app.handle().clone(), device_id, db.clone());
             app.manage(monitor);
 
-            // Start keyboard listener for slot shortcuts (Cmd+Ctrl+1-5)
+            // Start keyboard listener for slot shortcuts
             slots::manager::start_shortcut_listener(app.handle().clone());
 
-            // Build the tray menu
-            let quit = MenuItem::with_id(app, "quit", "Quit ClipSlot", true, None::<&str>)?;
-            let show_history =
-                MenuItem::with_id(app, "show_history", "Show History", true, None::<&str>)?;
-            let pause =
-                MenuItem::with_id(app, "pause", "Pause Monitoring", true, None::<&str>)?;
+            // Build initial tray menu with slot previews
+            let slots = db.get_all_slots().unwrap_or_default();
+            let menu = build_tray_menu(app.handle(), &slots, false)?;
 
-            app.manage(PauseMenuItem(pause.clone()));
-
-            let menu = Menu::with_items(app, &[&show_history, &pause, &quit])?;
-
-            let _tray = TrayIconBuilder::with_id("main")
+            let tray = TrayIconBuilder::with_id("main")
                 .icon(app.default_window_icon().unwrap().clone())
                 .menu(&menu)
                 .show_menu_on_left_click(true)
-                .on_menu_event(|app, event| match event.id.as_ref() {
-                    "quit" => {
-                        app.exit(0);
-                    }
-                    "show_history" => {
-                        // Show or focus the history window
-                        if let Some(window) = app.get_webview_window("history") {
-                            let _ = window.show();
-                            let _ = window.set_focus();
-                        } else {
-                            let _ = WebviewWindowBuilder::new(
-                                app,
-                                "history",
-                                WebviewUrl::App("index.html".into()),
-                            )
-                            .title("ClipSlot History")
-                            .inner_size(480.0, 600.0)
-                            .resizable(true)
-                            .center()
-                            .build();
-                        }
-                    }
-                    "pause" => {
-                        let monitor = app.state::<Arc<ClipboardMonitor>>();
-                        let is_paused = monitor.toggle_pause();
-
-                        let pause_item = app.state::<PauseMenuItem>();
-                        let label = if is_paused {
-                            "Resume Monitoring"
-                        } else {
-                            "Pause Monitoring"
-                        };
-                        let _ = pause_item.0.set_text(label);
-                    }
-                    _ => {}
-                })
-                .on_tray_icon_event(|_tray, event| {
-                    if let TrayIconEvent::Click {
-                        button: MouseButton::Left,
-                        button_state: MouseButtonState::Up,
-                        ..
-                    } = event
-                    {
-                        // Left click shows menu (handled by show_menu_on_left_click)
-                    }
+                .on_menu_event(|app, event| {
+                    handle_tray_menu_event(app, event.id.as_ref());
                 })
                 .build(app)?;
+
+            app.manage(TrayIconHandle(tray));
+
+            // Listen for slot changes from the shortcut listener thread
+            let handle = app.handle().clone();
+            app.listen("slot-changed", move |_| {
+                refresh_tray_menu(&handle);
+            });
 
             Ok(())
         })

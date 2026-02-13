@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Capability for all ClipSlot windows",
-  "windows": ["main", "history"],
+  "windows": ["main", "history", "settings"],
   "permissions": [
     "core:default",
     "opener:default",
