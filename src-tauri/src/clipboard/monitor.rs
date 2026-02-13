@@ -27,6 +27,14 @@ impl ClipboardMonitor {
         self.paused.load(Ordering::Relaxed)
     }
 
+    pub fn pause(&self) {
+        self.paused.store(true, Ordering::Relaxed);
+    }
+
+    pub fn resume(&self) {
+        self.paused.store(false, Ordering::Relaxed);
+    }
+
     pub fn toggle_pause(&self) -> bool {
         let was_paused = self.paused.fetch_xor(true, Ordering::Relaxed);
         let now_paused = !was_paused;

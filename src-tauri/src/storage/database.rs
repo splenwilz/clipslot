@@ -242,8 +242,9 @@ impl Database {
             |row| row.get(0),
         )?;
 
-        let preview = if item.content.len() > 100 {
-            Some(format!("{}...", &item.content[..100]))
+        let preview = if item.content.chars().count() > 100 {
+            let end = item.content.char_indices().nth(100).map(|(i, _)| i).unwrap_or(item.content.len());
+            Some(format!("{}...", &item.content[..end]))
         } else {
             Some(item.content.clone())
         };
@@ -269,8 +270,9 @@ impl Database {
             |row| {
                 let content: Option<String> = row.get(3)?;
                 let preview = content.as_ref().map(|c| {
-                    if c.len() > 100 {
-                        format!("{}...", &c[..100])
+                    if c.chars().count() > 100 {
+                        let end = c.char_indices().nth(100).map(|(i, _)| i).unwrap_or(c.len());
+                        format!("{}...", &c[..end])
                     } else {
                         c.clone()
                     }
@@ -300,8 +302,9 @@ impl Database {
             .query_map([], |row| {
                 let content: Option<String> = row.get(3)?;
                 let preview = content.as_ref().map(|c| {
-                    if c.len() > 100 {
-                        format!("{}...", &c[..100])
+                    if c.chars().count() > 100 {
+                        let end = c.char_indices().nth(100).map(|(i, _)| i).unwrap_or(c.len());
+                        format!("{}...", &c[..end])
                     } else {
                         c.clone()
                     }
