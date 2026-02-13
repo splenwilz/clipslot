@@ -31,7 +31,7 @@ impl SyncManager {
     pub fn new(db: Arc<Database>) -> Self {
         let server_url = db
             .get_setting("sync_server_url")
-            .unwrap_or_else(|| "http://localhost:3000".to_string());
+            .unwrap_or_else(|| crate::config::SYNC_SERVER_URL.to_string());
 
         let manager = Self {
             api: RwLock::new(ApiClient::new(&server_url)),

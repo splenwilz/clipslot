@@ -1,4 +1,5 @@
 mod clipboard;
+mod config;
 mod crypto;
 mod slots;
 mod storage;

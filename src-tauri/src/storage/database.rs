@@ -77,8 +77,8 @@ impl Database {
             [],
         )?;
         conn.execute(
-            "INSERT OR IGNORE INTO app_config (key, value) VALUES ('sync_server_url', 'http://localhost:3000')",
-            [],
+            "INSERT OR IGNORE INTO app_config (key, value) VALUES ('sync_server_url', ?1)",
+            [crate::config::SYNC_SERVER_URL],
         )?;
         conn.execute(
             "INSERT OR IGNORE INTO app_config (key, value) VALUES ('history_sync_enabled', 'false')",
