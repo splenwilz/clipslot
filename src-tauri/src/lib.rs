@@ -6,14 +6,14 @@ mod sync;
 
 use std::sync::Arc;
 
+use clipboard::item::ClipboardItem;
 use clipboard::monitor::ClipboardMonitor;
+use storage::database::Database;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::Manager;
+use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
 fn get_or_create_device_id() -> String {
-    // Generate a stable device ID based on hostname + a fixed namespace.
-    // Phase 2 will persist this in the database.
     let hostname = hostname::get()
         .map(|h| h.to_string_lossy().to_string())
         .unwrap_or_else(|_| "unknown".to_string());
@@ -24,6 +24,59 @@ fn get_or_create_device_id() -> String {
 /// Stored in Tauri managed state so tray menu events can update the pause label.
 struct PauseMenuItem(MenuItem<tauri::Wry>);
 
+// ── Tauri Commands ──────────────────────────────────────────────────────────
+
+#[tauri::command]
+fn get_clipboard_history(
+    db: tauri::State<'_, Arc<Database>>,
+    limit: Option<u32>,
+    offset: Option<u32>,
+) -> Result<Vec<ClipboardItem>, String> {
+    db.get_history(limit.unwrap_or(50), offset.unwrap_or(0))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn search_history(
+    db: tauri::State<'_, Arc<Database>>,
+    query: String,
+) -> Result<Vec<ClipboardItem>, String> {
+    db.search(&query).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_history_item(
+    db: tauri::State<'_, Arc<Database>>,
+    id: String,
+) -> Result<bool, String> {
+    db.delete_item(&id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn clear_history(db: tauri::State<'_, Arc<Database>>) -> Result<u32, String> {
+    db.clear_history().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_history_count(db: tauri::State<'_, Arc<Database>>) -> Result<u32, String> {
+    db.get_count().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn copy_to_clipboard(
+    app: tauri::AppHandle,
+    monitor: tauri::State<'_, Arc<ClipboardMonitor>>,
+    text: String,
+) -> Result<(), String> {
+    use tauri_plugin_clipboard_manager::ClipboardExt;
+    monitor.set_skip_next();
+    app.clipboard()
+        .write_text(&text)
+        .map_err(|e| e.to_string())
+}
+
+// ── App Entry ───────────────────────────────────────────────────────────────
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -31,17 +84,34 @@ pub fn run() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_notification::init())
+        .invoke_handler(tauri::generate_handler![
+            get_clipboard_history,
+            search_history,
+            delete_history_item,
+            clear_history,
+            get_history_count,
+            copy_to_clipboard,
+        ])
         .setup(|app| {
-            // Make this a tray-only app (no dock icon, no activation on click)
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+
+            // Initialize database
+            let data_dir = app
+                .path()
+                .app_data_dir()
+                .expect("failed to resolve app data dir");
+            let db = Arc::new(
+                Database::new(data_dir).expect("failed to initialize database"),
+            );
+            app.manage(db.clone());
 
             // Start clipboard monitoring
             let device_id = get_or_create_device_id();
             println!("[ClipSlot] Device ID: {}", device_id);
 
             let monitor = Arc::new(ClipboardMonitor::new());
-            monitor.start(app.handle().clone(), device_id);
+            monitor.start(app.handle().clone(), device_id, db);
             app.manage(monitor);
 
             // Build the tray menu
@@ -51,12 +121,10 @@ pub fn run() {
             let pause =
                 MenuItem::with_id(app, "pause", "Pause Monitoring", true, None::<&str>)?;
 
-            // Store the pause menu item so we can update its text later
             app.manage(PauseMenuItem(pause.clone()));
 
             let menu = Menu::with_items(app, &[&show_history, &pause, &quit])?;
 
-            // Build the tray icon
             let _tray = TrayIconBuilder::with_id("main")
                 .icon(app.default_window_icon().unwrap().clone())
                 .menu(&menu)
@@ -66,7 +134,22 @@ pub fn run() {
                         app.exit(0);
                     }
                     "show_history" => {
-                        println!("[ClipSlot] Show History clicked");
+                        // Show or focus the history window
+                        if let Some(window) = app.get_webview_window("history") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        } else {
+                            let _ = WebviewWindowBuilder::new(
+                                app,
+                                "history",
+                                WebviewUrl::App("index.html".into()),
+                            )
+                            .title("ClipSlot History")
+                            .inner_size(480.0, 600.0)
+                            .resizable(true)
+                            .center()
+                            .build();
+                        }
                     }
                     "pause" => {
                         let monitor = app.state::<Arc<ClipboardMonitor>>();

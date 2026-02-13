@@ -6,17 +6,20 @@ use tauri::{AppHandle, Emitter, Runtime};
 use tauri_plugin_clipboard_manager::ClipboardExt;
 
 use super::item::ClipboardItem;
+use crate::storage::database::Database;
 
 const POLL_INTERVAL_MS: u64 = 500;
 
 pub struct ClipboardMonitor {
     paused: Arc<AtomicBool>,
+    skip_next: Arc<AtomicBool>,
 }
 
 impl ClipboardMonitor {
     pub fn new() -> Self {
         Self {
             paused: Arc::new(AtomicBool::new(false)),
+            skip_next: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -34,8 +37,20 @@ impl ClipboardMonitor {
         now_paused
     }
 
-    pub fn start<R: Runtime>(&self, app_handle: AppHandle<R>, device_id: String) {
+    /// Tell the monitor to ignore the next clipboard change.
+    /// Used when the app itself writes to the clipboard (e.g., click-to-copy).
+    pub fn set_skip_next(&self) {
+        self.skip_next.store(true, Ordering::Relaxed);
+    }
+
+    pub fn start<R: Runtime>(
+        &self,
+        app_handle: AppHandle<R>,
+        device_id: String,
+        db: Arc<Database>,
+    ) {
         let paused = self.paused.clone();
+        let skip_next = self.skip_next.clone();
 
         std::thread::spawn(move || {
             let mut last_hash: Option<String> = None;
@@ -74,6 +89,11 @@ impl ClipboardMonitor {
 
                 last_hash = Some(hash);
 
+                // If the app itself wrote to the clipboard, skip this capture
+                if skip_next.swap(false, Ordering::Relaxed) {
+                    continue;
+                }
+
                 let item = ClipboardItem::new(text, &device_id);
 
                 println!(
@@ -84,8 +104,23 @@ impl ClipboardMonitor {
                     item.created_at
                 );
 
-                // Emit event to frontend (and for future internal listeners)
-                let _ = app_handle.emit("clipboard-changed", &item);
+                // Persist to database (with dedup check)
+                match db.insert_item(&item) {
+                    Ok(true) => {
+                        // Enforce history limit
+                        if let Err(e) = db.enforce_history_limit() {
+                            eprintln!("[ClipSlot] Failed to enforce limit: {}", e);
+                        }
+                        // Emit event to frontend
+                        let _ = app_handle.emit("clipboard-changed", &item);
+                    }
+                    Ok(false) => {
+                        // Duplicate detected, skip
+                    }
+                    Err(e) => {
+                        eprintln!("[ClipSlot] Failed to persist item: {}", e);
+                    }
+                }
             }
         });
     }
