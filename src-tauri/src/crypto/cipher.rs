@@ -37,18 +37,20 @@ impl CryptoEngine {
 
     /// Decrypt stored value. If it starts with "ENC:", decode and decrypt.
     /// Otherwise, return as-is (legacy plaintext).
+    /// Falls back to returning as plaintext if base64 decoding or length check fails.
     pub fn decrypt(&self, stored: &str) -> Result<String, String> {
         if !stored.starts_with(ENC_PREFIX) {
             return Ok(stored.to_string());
         }
 
         let encoded = &stored[ENC_PREFIX.len()..];
-        let combined = BASE64
-            .decode(encoded)
-            .map_err(|e| format!("Base64 decode failed: {}", e))?;
+        let combined = match BASE64.decode(encoded) {
+            Ok(c) => c,
+            Err(_) => return Ok(stored.to_string()),
+        };
 
         if combined.len() < 12 {
-            return Err("Invalid encrypted data: too short".to_string());
+            return Ok(stored.to_string());
         }
 
         let (nonce_bytes, ciphertext) = combined.split_at(12);

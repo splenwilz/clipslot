@@ -361,7 +361,7 @@ pub fn run() {
 
             // Initialize encryption
             let master_key = crypto::keychain::get_or_create_master_key()
-                .expect("failed to initialize encryption key");
+                .map_err(|e| Box::<dyn std::error::Error>::from(e))?;
             let crypto_engine = Arc::new(CryptoEngine::new(&master_key));
 
             // Initialize database

@@ -214,9 +214,7 @@ pub fn handle_paste_from_slot(app: &AppHandle<Wry>, slot_number: u32) {
 
     // 7. Restore original clipboard content
     if let Some(original) = original_clipboard {
-        if !original.is_empty() {
-            let _ = app.clipboard().write_text(&original);
-        }
+        let _ = app.clipboard().write_text(&original);
     }
 
     // 8. Resume clipboard monitoring

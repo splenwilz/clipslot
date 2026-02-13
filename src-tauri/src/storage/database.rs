@@ -101,11 +101,13 @@ impl Database {
             }
         };
 
-        let rows: Vec<(String, String)> = stmt
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
-            .unwrap_or_else(|_| panic!("query failed"))
-            .filter_map(|r| r.ok())
-            .collect();
+        let rows: Vec<(String, String)> = match stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?))) {
+            Ok(mapped) => mapped.filter_map(|r| r.ok()).collect(),
+            Err(e) => {
+                eprintln!("[ClipSlot] Failed to query items for encryption migration: {}", e);
+                return;
+            }
+        };
 
         let mut migrated = 0;
         for (id, content) in &rows {

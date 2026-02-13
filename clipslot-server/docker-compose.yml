@@ -1,0 +1,25 @@
+services:
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: clipslot
+      POSTGRES_PASSWORD: clipslot_dev
+      POSTGRES_DB: clipslot
+    ports:
+      - "15432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  server:
+    build: .
+    environment:
+      DATABASE_URL: postgres://clipslot:clipslot_dev@db:5432/clipslot
+      JWT_SECRET: dev-secret-change-in-production
+      LISTEN_ADDR: "0.0.0.0:3000"
+    ports:
+      - "3000:3000"
+    depends_on:
+      - db
+
+volumes:
+  pgdata:
