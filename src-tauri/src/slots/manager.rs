@@ -20,12 +20,35 @@ pub fn start_shortcut_listener(app_handle: AppHandle<Wry>) {
         let mut last_save_slot: Option<u32> = None;
         let mut last_paste_slot: Option<u32> = None;
 
-        println!("[ClipSlot] Shortcut listener started (polling)");
+        clog!("Shortcut listener started (polling)");
+        #[cfg(target_os = "macos")]
+        clog!("Shortcuts: Save=Cmd+Ctrl+1-5, Paste=Cmd+Option+1-5");
+        #[cfg(not(target_os = "macos"))]
+        clog!("Shortcuts: Save=Ctrl+Shift+1-5, Paste=Alt+Shift+1-5");
+
+        let mut log_keys_once = true;
 
         loop {
             std::thread::sleep(Duration::from_millis(50));
 
             let keys = device_state.get_keys();
+
+            // Log detected keys once when any modifier is held (for debugging)
+            if !keys.is_empty() && log_keys_once {
+                let has_modifier = keys.iter().any(|k| matches!(k,
+                    Keycode::LControl | Keycode::RControl |
+                    Keycode::LShift | Keycode::RShift |
+                    Keycode::LAlt | Keycode::RAlt |
+                    Keycode::Command | Keycode::LOption
+                ));
+                if has_modifier {
+                    clog!("Keys detected: {:?}", keys);
+                    log_keys_once = false;
+                }
+            }
+            if keys.is_empty() {
+                log_keys_once = true;
+            }
 
             let ctrl_held =
                 keys.contains(&Keycode::LControl) || keys.contains(&Keycode::RControl);
@@ -75,7 +98,7 @@ pub fn start_shortcut_listener(app_handle: AppHandle<Wry>) {
             if save_combo {
                 if slot_number != last_save_slot {
                     if let Some(n) = slot_number {
-                        println!("[ClipSlot] Detected save-to-slot shortcut: slot {}", n);
+                        clog!("Shortcut: SAVE to slot {}", n);
                         handle_save_to_slot(&app_handle, n);
                     }
                     last_save_slot = slot_number;
@@ -88,7 +111,7 @@ pub fn start_shortcut_listener(app_handle: AppHandle<Wry>) {
             if paste_combo {
                 if slot_number != last_paste_slot {
                     if let Some(n) = slot_number {
-                        println!("[ClipSlot] Detected paste-from-slot shortcut: slot {}", n);
+                        clog!("Shortcut: PASTE from slot {}", n);
                         handle_paste_from_slot(&app_handle, n);
                     }
                     last_paste_slot = slot_number;

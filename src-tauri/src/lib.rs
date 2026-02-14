@@ -1,6 +1,8 @@
 mod clipboard;
 mod config;
 mod crypto;
+#[macro_use]
+mod logging;
 mod slots;
 mod storage;
 mod sync;
@@ -361,6 +363,13 @@ fn is_encryption_enabled() -> bool {
     true
 }
 
+// ── Debug Commands ───────────────────────────────────────────────────────────
+
+#[tauri::command]
+fn get_log_path() -> Option<String> {
+    logging::log_path()
+}
+
 // ── Sync Commands ────────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -369,13 +378,16 @@ async fn sync_login(
     email: String,
     password: String,
 ) -> Result<sync::types::SyncState, String> {
+    clog!("Login attempt for {}", email);
     let state = sync.login(&email, &password).await?;
-    // Auto-sync and connect WebSocket after login
-    if let Err(e) = sync.start_sync().await {
-        eprintln!("[ClipSlot] Auto-sync after login failed: {}", e);
+    clog!("Login successful, starting auto-sync...");
+    match sync.start_sync().await {
+        Ok(msg) => clog!("Post-login sync: {}", msg),
+        Err(e) => clog!("ERROR: Post-login sync failed: {}", e),
     }
-    if let Err(e) = sync.connect_ws().await {
-        eprintln!("[ClipSlot] WS connect after login failed: {}", e);
+    match sync.connect_ws().await {
+        Ok(()) => clog!("Post-login WS connected"),
+        Err(e) => clog!("ERROR: Post-login WS connect failed: {}", e),
     }
     Ok(state)
 }
@@ -386,13 +398,16 @@ async fn sync_register(
     email: String,
     password: String,
 ) -> Result<sync::types::SyncState, String> {
+    clog!("Register attempt for {}", email);
     let state = sync.register(&email, &password).await?;
-    // Auto-sync and connect WebSocket after registration
-    if let Err(e) = sync.start_sync().await {
-        eprintln!("[ClipSlot] Auto-sync after register failed: {}", e);
+    clog!("Register successful, starting auto-sync...");
+    match sync.start_sync().await {
+        Ok(msg) => clog!("Post-register sync: {}", msg),
+        Err(e) => clog!("ERROR: Post-register sync failed: {}", e),
     }
-    if let Err(e) = sync.connect_ws().await {
-        eprintln!("[ClipSlot] WS connect after register failed: {}", e);
+    match sync.connect_ws().await {
+        Ok(()) => clog!("Post-register WS connected"),
+        Err(e) => clog!("ERROR: Post-register WS connect failed: {}", e),
     }
     Ok(state)
 }
@@ -418,10 +433,12 @@ async fn get_linked_devices(
 
 #[tauri::command]
 async fn force_sync(sync: tauri::State<'_, Arc<SyncManager>>) -> Result<String, String> {
+    clog!("Force sync requested");
     let result = sync.start_sync().await?;
-    // Ensure WebSocket is connected for real-time sync
-    if let Err(e) = sync.connect_ws().await {
-        eprintln!("[ClipSlot] WS connect after force sync failed: {}", e);
+    clog!("Force sync result: {}", result);
+    match sync.connect_ws().await {
+        Ok(()) => clog!("Force sync: WS connected"),
+        Err(e) => clog!("ERROR: Force sync WS connect failed: {}", e),
     }
     Ok(result)
 }
@@ -496,8 +513,16 @@ pub fn run() {
             toggle_history_sync,
             generate_link_code,
             enter_link_code,
+            get_log_path,
         ])
         .setup(|app| {
+            // Initialize file logging first
+            let data_dir = app
+                .path()
+                .app_data_dir()
+                .expect("failed to resolve app data dir");
+            logging::init(&data_dir);
+
             #[cfg(target_os = "macos")]
             {
                 app.set_activation_policy(tauri::ActivationPolicy::Accessory);
@@ -506,16 +531,20 @@ pub fn run() {
                     fn AXIsProcessTrusted() -> bool;
                 }
                 let trusted = unsafe { AXIsProcessTrusted() };
-                if !trusted {
-                    eprintln!("[ClipSlot] WARNING: Accessibility not granted — shortcuts won't work.");
-                    eprintln!("[ClipSlot] Grant access in: System Settings > Privacy & Security > Accessibility");
+                if trusted {
+                    clog!("Accessibility: granted");
+                } else {
+                    clog!("WARNING: Accessibility not granted — shortcuts won't work");
+                    clog!("Grant access in: System Settings > Privacy & Security > Accessibility");
                 }
             }
 
             // Initialize encryption
+            clog!("Initializing encryption...");
             let master_key = crypto::keychain::get_or_create_master_key()
                 .map_err(|e| Box::<dyn std::error::Error>::from(e))?;
             let crypto_engine = Arc::new(CryptoEngine::new(&master_key));
+            clog!("Encryption initialized");
 
             // Initialize database
             let data_dir = app
@@ -526,26 +555,40 @@ pub fn run() {
                 Database::new(data_dir, crypto_engine).expect("failed to initialize database"),
             );
             app.manage(db.clone());
+            clog!("Database initialized");
 
             // Initialize sync manager
+            let server_url = db
+                .get_setting("sync_server_url")
+                .unwrap_or_else(|| "not set".to_string());
+            clog!("Sync server URL: {}", server_url);
             let sync_manager = Arc::new(SyncManager::new(db.clone()));
             app.manage(sync_manager.clone());
+            clog!("SyncManager initialized, has_auth={}", sync_manager.has_auth());
 
-            // Auto-sync + connect WebSocket if already authenticated
+            // Auto-sync + connect WebSocket if already authenticated.
+            // The thread + runtime must stay alive to keep the WS connection open.
             if sync_manager.has_auth() {
+                clog!("Auth found, starting auto-sync...");
                 let sm = sync_manager.clone();
                 std::thread::spawn(move || {
                     let rt = tokio::runtime::Runtime::new()
                         .expect("Failed to create sync runtime");
                     rt.block_on(async {
-                        if let Err(e) = sm.start_sync().await {
-                            eprintln!("[ClipSlot] Auto-sync on startup failed: {}", e);
+                        match sm.start_sync().await {
+                            Ok(msg) => clog!("Auto-sync completed: {}", msg),
+                            Err(e) => clog!("ERROR: Auto-sync failed: {}", e),
                         }
-                        if let Err(e) = sm.connect_ws().await {
-                            eprintln!("[ClipSlot] WS connect on startup failed: {}", e);
+                        match sm.connect_ws().await {
+                            Ok(()) => clog!("WebSocket connected"),
+                            Err(e) => clog!("ERROR: WS connect failed: {}", e),
                         }
+                        // Keep runtime alive so WS tasks continue running
+                        std::future::pending::<()>().await;
                     });
                 });
+            } else {
+                clog!("No auth found, skipping auto-sync");
             }
 
             // Start clipboard monitoring

@@ -186,15 +186,19 @@ impl SyncManager {
     }
 
     pub async fn start_sync(&self) -> Result<String, String> {
+        clog!("start_sync: beginning...");
         let auth_guard = self.auth.read().await;
         let auth = auth_guard.as_ref().ok_or("Not logged in")?;
         let token = auth.token.clone();
         let device_id = auth.device_id.to_string();
+        clog!("start_sync: device_id={}", device_id);
         drop(auth_guard);
         let api = self.api.read().await;
+        clog!("start_sync: API base_url={}", api.base_url());
 
         *self.status.write().await = SyncStatus::Syncing;
 
+        clog!("start_sync: performing slot sync...");
         let slot_synced = super::slot_sync::perform_full_slot_sync(
             &api,
             &token,
@@ -202,6 +206,7 @@ impl SyncManager {
             &device_id,
         )
         .await?;
+        clog!("start_sync: slot sync done, synced {} slots", slot_synced);
 
         // History sync (opt-in)
         let history_sync_enabled = self
@@ -209,6 +214,7 @@ impl SyncManager {
             .get_setting("history_sync_enabled")
             .map(|v| v == "true")
             .unwrap_or(false);
+        clog!("start_sync: history_sync_enabled={}", history_sync_enabled);
 
         let mut history_msg = String::new();
         if history_sync_enabled {
@@ -222,9 +228,10 @@ impl SyncManager {
             {
                 Ok((pulled, pushed)) => {
                     history_msg = format!(", history: pulled {}, pushed {}", pulled, pushed);
+                    clog!("start_sync: history pulled={}, pushed={}", pulled, pushed);
                 }
                 Err(e) => {
-                    eprintln!("[ClipSlot] History sync failed: {}", e);
+                    clog!("ERROR: History sync failed: {}", e);
                 }
             }
         }
@@ -237,17 +244,20 @@ impl SyncManager {
     // ── WebSocket ───────────────────────────────────────────────────────
 
     pub async fn connect_ws(&self) -> Result<(), String> {
+        clog!("connect_ws: starting...");
         let auth_guard = self.auth.read().await;
         let auth = auth_guard.as_ref().ok_or("Not logged in")?;
         let api = self.api.read().await;
 
         let ws_url = api.ws_url(&auth.token);
+        clog!("connect_ws: URL={}", ws_url.split('?').next().unwrap_or(&ws_url));
         drop(api);
         drop(auth_guard);
 
         *self.status.write().await = SyncStatus::Connecting;
 
         let client = WsClient::connect(&ws_url).await?;
+        clog!("connect_ws: WebSocket connected successfully");
 
         // Spawn a task to handle incoming WS messages
         let mut rx = client.subscribe();
@@ -339,8 +349,10 @@ impl SyncManager {
     /// Notify the server of a local slot change via WebSocket.
     /// If WS is disconnected, queues the message for later.
     pub async fn notify_slot_changed(&self, slot_number: u32) {
+        clog!("notify_slot_changed: slot {}", slot_number);
         let auth = self.auth.read().await;
         if auth.is_none() {
+            clog!("notify_slot_changed: no auth, skipping");
             return;
         }
         drop(auth);
@@ -403,11 +415,13 @@ impl SyncManager {
     async fn send_or_queue(&self, msg: WsMessage) {
         let ws = self.ws.read().await;
         if let Some(client) = ws.as_ref() {
+            clog!("send_or_queue: sending via WS");
             if let Err(e) = client.send(&msg).await {
-                eprintln!("[ClipSlot] WS send failed, queuing: {}", e);
+                clog!("ERROR: WS send failed, queuing: {}", e);
                 self.offline_queue.enqueue(msg);
             }
         } else {
+            clog!("send_or_queue: WS not connected, queuing message");
             self.offline_queue.enqueue(msg);
         }
     }
