@@ -271,7 +271,9 @@ impl SyncManager {
             .unwrap_or_default();
 
         tokio::spawn(async move {
+            clog!("WS message handler started, listening for broadcasts...");
             while let Ok(msg) = rx.recv().await {
+                clog!("WS handler: received broadcast message");
                 match msg {
                     WsMessage::SlotUpdated {
                         slot_number,
@@ -279,7 +281,7 @@ impl SyncManager {
                         timestamp,
                         ..
                     } => {
-                        // Decode base64 blob from server to get our encrypted string
+                        clog!("WS handler: SlotUpdated slot={}", slot_number);
                         if let Ok(blob_bytes) = BASE64.decode(&encrypted_blob) {
                             if let Ok(enc_str) = String::from_utf8(blob_bytes) {
                                 if let Err(e) = db.save_encrypted_to_slot(
@@ -288,17 +290,18 @@ impl SyncManager {
                                     timestamp,
                                     &device_id_str,
                                 ) {
-                                    eprintln!(
-                                        "[ClipSlot] Failed to save synced slot {}: {}",
+                                    clog!(
+                                        "ERROR: Failed to save synced slot {}: {}",
                                         slot_number, e
                                     );
                                 } else {
-                                    println!(
-                                        "[ClipSlot] Slot {} updated from remote",
-                                        slot_number
-                                    );
+                                    clog!("Slot {} updated from remote", slot_number);
                                 }
+                            } else {
+                                clog!("ERROR: SlotUpdated blob is not valid UTF-8");
                             }
+                        } else {
+                            clog!("ERROR: SlotUpdated blob is not valid base64");
                         }
                     }
                     WsMessage::HistoryNew {
@@ -307,7 +310,7 @@ impl SyncManager {
                         content_hash,
                         device_id,
                     } => {
-                        // Decode base64 blob and save as a synced history item
+                        clog!("WS handler: HistoryNew id={}", id);
                         if let Ok(blob_bytes) = BASE64.decode(&encrypted_blob) {
                             if let Ok(enc_str) = String::from_utf8(blob_bytes) {
                                 let now = chrono::Utc::now().timestamp_millis();
@@ -318,22 +321,22 @@ impl SyncManager {
                                     &device_id.to_string(),
                                     now,
                                 ) {
-                                    eprintln!(
-                                        "[ClipSlot] Failed to save synced history item: {}",
-                                        e
-                                    );
+                                    clog!("ERROR: Failed to save synced history item: {}", e);
                                 } else {
-                                    println!("[ClipSlot] History item received from remote");
+                                    clog!("History item received from remote");
                                 }
                             }
                         }
                     }
                     WsMessage::Error { message } => {
-                        eprintln!("[ClipSlot] WS error from server: {}", message);
+                        clog!("WS handler: server error: {}", message);
                     }
-                    _ => {}
+                    _ => {
+                        clog!("WS handler: ignoring message type");
+                    }
                 }
             }
+            clog!("WS message handler ended (broadcast channel closed)");
         });
 
         *self.ws.write().await = Some(client);
