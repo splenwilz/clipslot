@@ -8,6 +8,7 @@ use tauri_plugin_notification::NotificationExt;
 use crate::clipboard::item::ClipboardItem;
 use crate::clipboard::monitor::ClipboardMonitor;
 use crate::storage::database::Database;
+use crate::sync::manager::SyncManager;
 
 /// Start keyboard polling for slot shortcuts.
 /// macOS:   Save = Cmd+Ctrl+1-5,    Paste = Cmd+Option+1-5
@@ -181,6 +182,18 @@ pub fn handle_save_to_slot(app: &AppHandle<Wry>, slot_number: u32) {
 
             // Signal tray menu to refresh
             let _ = app.emit("slot-changed", ());
+
+            // Notify sync manager so the slot change reaches other devices
+            if let Some(sync) = app.try_state::<Arc<SyncManager>>() {
+                let sync = sync.inner().clone();
+                std::thread::spawn(move || {
+                    let rt = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .expect("Failed to create runtime for sync notify");
+                    rt.block_on(sync.notify_slot_changed(slot_number));
+                });
+            }
         }
         Err(e) => {
             eprintln!("[ClipSlot] Failed to save to slot {}: {}", slot_number, e);

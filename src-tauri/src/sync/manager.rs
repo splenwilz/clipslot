@@ -245,6 +245,13 @@ impl SyncManager {
 
     pub async fn connect_ws(&self) -> Result<(), String> {
         clog!("connect_ws: starting...");
+
+        // Disconnect any existing WS connection first
+        if let Some(old_ws) = self.ws.write().await.take() {
+            clog!("connect_ws: disconnecting old WS connection");
+            old_ws.disconnect().await;
+        }
+
         let auth_guard = self.auth.read().await;
         let auth = auth_guard.as_ref().ok_or("Not logged in")?;
         let api = self.api.read().await;
