@@ -389,6 +389,7 @@ async fn sync_login(
         Ok(()) => clog!("Post-login WS connected"),
         Err(e) => clog!("ERROR: Post-login WS connect failed: {}", e),
     }
+    sync.inner().clone().spawn_ws_reconnect_loop();
     Ok(state)
 }
 
@@ -409,6 +410,7 @@ async fn sync_register(
         Ok(()) => clog!("Post-register WS connected"),
         Err(e) => clog!("ERROR: Post-register WS connect failed: {}", e),
     }
+    sync.inner().clone().spawn_ws_reconnect_loop();
     Ok(state)
 }
 
@@ -440,6 +442,7 @@ async fn force_sync(sync: tauri::State<'_, Arc<SyncManager>>) -> Result<String, 
         Ok(()) => clog!("Force sync: WS connected"),
         Err(e) => clog!("ERROR: Force sync WS connect failed: {}", e),
     }
+    sync.inner().clone().spawn_ws_reconnect_loop();
     Ok(result)
 }
 
@@ -583,6 +586,7 @@ pub fn run() {
                             Ok(()) => clog!("WebSocket connected"),
                             Err(e) => clog!("ERROR: WS connect failed: {}", e),
                         }
+                        sm.clone().spawn_ws_reconnect_loop();
                         // Keep runtime alive so WS tasks continue running
                         std::future::pending::<()>().await;
                     });

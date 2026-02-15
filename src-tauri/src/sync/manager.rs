@@ -1,4 +1,6 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use tokio::sync::RwLock;
@@ -25,6 +27,8 @@ pub struct SyncManager {
     ws: RwLock<Option<WsClient>>,
     status: RwLock<SyncStatus>,
     offline_queue: OfflineQueue,
+    ws_alive: Arc<tokio::sync::watch::Sender<bool>>,
+    reconnect_active: AtomicBool,
 }
 
 impl SyncManager {
@@ -33,6 +37,7 @@ impl SyncManager {
             .get_setting("sync_server_url")
             .unwrap_or_else(|| crate::config::SYNC_SERVER_URL.to_string());
 
+        let (ws_alive_tx, _) = tokio::sync::watch::channel(false);
         let manager = Self {
             api: RwLock::new(ApiClient::new(&server_url)),
             db,
@@ -40,6 +45,8 @@ impl SyncManager {
             ws: RwLock::new(None),
             status: RwLock::new(SyncStatus::Disconnected),
             offline_queue: OfflineQueue::new(),
+            ws_alive: Arc::new(ws_alive_tx),
+            reconnect_active: AtomicBool::new(false),
         };
 
         // Try to restore auth from persisted settings
@@ -277,6 +284,7 @@ impl SyncManager {
             .map(|a| a.device_id.to_string())
             .unwrap_or_default();
 
+        let ws_alive = self.ws_alive.clone();
         tokio::spawn(async move {
             clog!("WS message handler started, listening for broadcasts...");
             while let Ok(msg) = rx.recv().await {
@@ -343,10 +351,12 @@ impl SyncManager {
                     }
                 }
             }
+            ws_alive.send_replace(false);
             clog!("WS message handler ended (broadcast channel closed)");
         });
 
         *self.ws.write().await = Some(client);
+        self.ws_alive.send_replace(true);
         *self.status.write().await = SyncStatus::Connected;
         println!("[ClipSlot] WebSocket connected and listening");
 
@@ -455,6 +465,64 @@ impl SyncManager {
                 }
             }
         }
+    }
+
+    /// Spawn a background task that auto-reconnects WS when it drops.
+    /// Safe to call multiple times — only one loop runs at a time.
+    pub fn spawn_ws_reconnect_loop(self: Arc<Self>) {
+        if self.reconnect_active.swap(true, Ordering::AcqRel) {
+            clog!("WS reconnect loop already active");
+            return;
+        }
+
+        let this = self;
+        tokio::spawn(async move {
+            let mut rx = this.ws_alive.subscribe();
+            let mut backoff = 3u64;
+
+            loop {
+                // Wait for WS to disconnect (ws_alive becomes false)
+                match rx.wait_for(|&alive| !alive).await {
+                    Ok(_) => {}
+                    Err(_) => break,
+                }
+
+                if this.auth.read().await.is_none() {
+                    clog!("WS reconnect: not authenticated, stopping");
+                    break;
+                }
+
+                clog!("WS reconnect: connection lost, retrying in {}s...", backoff);
+                *this.status.write().await = SyncStatus::Disconnected;
+                tokio::time::sleep(Duration::from_secs(backoff)).await;
+
+                // Check if someone else already reconnected (e.g. force_sync)
+                if *this.ws_alive.borrow() {
+                    clog!("WS reconnect: already reconnected, skipping");
+                    backoff = 3;
+                    continue;
+                }
+
+                if this.auth.read().await.is_none() {
+                    clog!("WS reconnect: logged out during backoff, stopping");
+                    break;
+                }
+
+                match this.connect_ws().await {
+                    Ok(()) => {
+                        clog!("WS reconnect: success");
+                        backoff = 3;
+                    }
+                    Err(e) => {
+                        clog!("WS reconnect: failed: {}", e);
+                        backoff = (backoff * 2).min(30);
+                    }
+                }
+            }
+
+            this.reconnect_active.store(false, Ordering::Release);
+            clog!("WS reconnect loop stopped");
+        });
     }
 
     pub async fn get_token(&self) -> Option<String> {
