@@ -384,7 +384,18 @@ impl Database {
         )?;
 
         let content = row_data.3.and_then(|encrypted| {
-            self.crypto.decrypt(&encrypted).ok()
+            clog!("get_slot {}: encrypted content present ({}B), starts_with ENC:{}",
+                slot_number, encrypted.len(), encrypted.starts_with("ENC:"));
+            match self.crypto.decrypt(&encrypted) {
+                Ok(plain) => {
+                    clog!("get_slot {}: decryption OK ({}B)", slot_number, plain.len());
+                    Some(plain)
+                }
+                Err(e) => {
+                    clog!("ERROR: get_slot {}: decryption FAILED: {}", slot_number, e);
+                    None
+                }
+            }
         });
 
         let preview = content.as_ref().map(|c| {

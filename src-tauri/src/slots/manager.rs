@@ -208,19 +208,24 @@ pub fn handle_save_to_slot(app: &AppHandle<Wry>, slot_number: u32) {
 }
 
 pub fn handle_paste_from_slot(app: &AppHandle<Wry>, slot_number: u32) {
+    clog!("handle_paste_from_slot: slot {}", slot_number);
     let db = app.state::<Arc<Database>>();
 
     // Read slot content from DB
     let slot_info = match db.get_slot(slot_number) {
-        Ok(info) => info,
+        Ok(info) => {
+            clog!("handle_paste_from_slot: got slot info, is_empty={}, has_content={}, name={}",
+                info.is_empty, info.content.is_some(), info.name);
+            info
+        }
         Err(e) => {
-            eprintln!("[ClipSlot] Failed to read slot {}: {}", slot_number, e);
+            clog!("ERROR: handle_paste_from_slot: get_slot failed: {}", e);
             return;
         }
     };
 
     if slot_info.is_empty {
-        println!("[ClipSlot] Slot {} is empty", slot_number);
+        clog!("handle_paste_from_slot: slot {} is empty", slot_number);
         let _ = app
             .notification()
             .builder()
