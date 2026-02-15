@@ -238,12 +238,12 @@ pub fn handle_paste_from_slot(app: &AppHandle<Wry>, slot_number: u32) {
     let slot_content = match slot_info.content {
         Some(c) => c,
         None => {
-            eprintln!("[ClipSlot] Slot {} content is None despite not being empty", slot_number);
+            clog!("ERROR: Slot {} content is None despite not being empty", slot_number);
             return;
         }
     };
-    println!(
-        "[ClipSlot] Pasting from {} ({} chars)",
+    clog!(
+        "Pasting from {} ({} chars)",
         slot_info.name,
         slot_content.len()
     );
@@ -258,7 +258,7 @@ pub fn handle_paste_from_slot(app: &AppHandle<Wry>, slot_number: u32) {
 
     // 3. Write slot content to system clipboard
     if let Err(e) = app.clipboard().write_text(&slot_content) {
-        eprintln!("[ClipSlot] Failed to write slot content to clipboard: {}", e);
+        clog!("ERROR: Failed to write slot content to clipboard: {}", e);
         if let Some(monitor) = app.try_state::<Arc<ClipboardMonitor>>() {
             monitor.resume();
         }
@@ -270,8 +270,11 @@ pub fn handle_paste_from_slot(app: &AppHandle<Wry>, slot_number: u32) {
 
     // 5. Simulate Cmd+V paste keystroke (uses CGEvent with explicit flags,
     //    so physical Cmd+Option being held won't interfere)
+    clog!("Simulating Ctrl+V paste...");
     if let Err(e) = simulate_paste() {
-        eprintln!("[ClipSlot] Failed to simulate paste: {}", e);
+        clog!("ERROR: Failed to simulate paste: {}", e);
+    } else {
+        clog!("Paste simulation sent");
     }
 
     // 6. Wait for the target app to process the paste
@@ -287,7 +290,7 @@ pub fn handle_paste_from_slot(app: &AppHandle<Wry>, slot_number: u32) {
         monitor.resume();
     }
 
-    println!("[ClipSlot] Paste from {} complete", slot_info.name);
+    clog!("Paste from {} complete", slot_info.name);
 }
 
 /// Simulate Cmd+V using CoreGraphics CGEvent with explicit flags.
