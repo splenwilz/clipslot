@@ -351,21 +351,32 @@ fn simulate_paste() -> Result<(), String> {
 
 #[cfg(target_os = "windows")]
 fn simulate_paste() -> Result<(), String> {
-    use std::mem;
-
+    // Windows INPUT struct layout on 64-bit:
+    //   offset 0:  type (u32, 4 bytes)
+    //   offset 4:  _align (u32, 4 bytes padding for union alignment)
+    //   offset 8:  union start — KEYBDINPUT fields:
+    //     offset 8:  wVk (u16)
+    //     offset 10: wScan (u16)
+    //     offset 12: dwFlags (u32)
+    //     offset 16: time (u32)
+    //     offset 20: [4 bytes padding]
+    //     offset 24: dwExtraInfo (usize, 8 bytes)
+    //     offset 32: [8 bytes padding to fill union to MOUSEINPUT size]
+    //   offset 40: end — total sizeof(INPUT) = 40 bytes
     #[repr(C)]
-    struct KeybdInput {
-        r#type: u32,
+    struct Input {
+        type_: u32,
+        _align: u32,       // padding between type and union
         vk: u16,
         scan: u16,
         flags: u32,
         time: u32,
         extra_info: usize,
-        _pad: [u8; 8], // Padding to match INPUT union size
+        _union_pad: [u8; 8], // pad union to MOUSEINPUT size
     }
 
     extern "system" {
-        fn SendInput(count: u32, inputs: *const KeybdInput, size: i32) -> u32;
+        fn SendInput(count: u32, inputs: *const Input, size: i32) -> u32;
     }
 
     const INPUT_KEYBOARD: u32 = 1;
@@ -373,61 +384,28 @@ fn simulate_paste() -> Result<(), String> {
     const VK_CONTROL: u16 = 0x11;
     const VK_V: u16 = 0x56;
 
+    let size = std::mem::size_of::<Input>() as i32;
+    clog!("SendInput: INPUT struct size={}", size);
+
     let inputs = [
         // Ctrl down
-        KeybdInput {
-            r#type: INPUT_KEYBOARD,
-            vk: VK_CONTROL,
-            scan: 0,
-            flags: 0,
-            time: 0,
-            extra_info: 0,
-            _pad: [0; 8],
-        },
+        Input { type_: INPUT_KEYBOARD, _align: 0, vk: VK_CONTROL, scan: 0, flags: 0, time: 0, extra_info: 0, _union_pad: [0; 8] },
         // V down
-        KeybdInput {
-            r#type: INPUT_KEYBOARD,
-            vk: VK_V,
-            scan: 0,
-            flags: 0,
-            time: 0,
-            extra_info: 0,
-            _pad: [0; 8],
-        },
+        Input { type_: INPUT_KEYBOARD, _align: 0, vk: VK_V, scan: 0, flags: 0, time: 0, extra_info: 0, _union_pad: [0; 8] },
         // V up
-        KeybdInput {
-            r#type: INPUT_KEYBOARD,
-            vk: VK_V,
-            scan: 0,
-            flags: KEYEVENTF_KEYUP,
-            time: 0,
-            extra_info: 0,
-            _pad: [0; 8],
-        },
+        Input { type_: INPUT_KEYBOARD, _align: 0, vk: VK_V, scan: 0, flags: KEYEVENTF_KEYUP, time: 0, extra_info: 0, _union_pad: [0; 8] },
         // Ctrl up
-        KeybdInput {
-            r#type: INPUT_KEYBOARD,
-            vk: VK_CONTROL,
-            scan: 0,
-            flags: KEYEVENTF_KEYUP,
-            time: 0,
-            extra_info: 0,
-            _pad: [0; 8],
-        },
+        Input { type_: INPUT_KEYBOARD, _align: 0, vk: VK_CONTROL, scan: 0, flags: KEYEVENTF_KEYUP, time: 0, extra_info: 0, _union_pad: [0; 8] },
     ];
 
     let sent = unsafe {
-        SendInput(
-            4,
-            inputs.as_ptr(),
-            mem::size_of::<KeybdInput>() as i32,
-        )
+        SendInput(4, inputs.as_ptr(), size)
     };
 
     if sent == 4 {
         Ok(())
     } else {
-        Err("SendInput failed to send all key events".to_string())
+        Err(format!("SendInput returned {} (expected 4), size={}", sent, size))
     }
 }
 
