@@ -384,28 +384,34 @@ fn simulate_paste() -> Result<(), String> {
     const VK_CONTROL: u16 = 0x11;
     const VK_V: u16 = 0x56;
 
-    let size = std::mem::size_of::<Input>() as i32;
-    clog!("SendInput: INPUT struct size={}", size);
+    const VK_SHIFT: u16 = 0x10;
+    const VK_MENU: u16 = 0x12; // Alt
 
+    let size = std::mem::size_of::<Input>() as i32;
+
+    let make = |vk: u16, flags: u32| -> Input {
+        Input { type_: INPUT_KEYBOARD, _align: 0, vk, scan: 0, flags, time: 0, extra_info: 0, _union_pad: [0; 8] }
+    };
+
+    // Release physical Alt+Shift first (they're still held from the shortcut),
+    // then send Ctrl+V, so the target app sees only Ctrl+V.
     let inputs = [
-        // Ctrl down
-        Input { type_: INPUT_KEYBOARD, _align: 0, vk: VK_CONTROL, scan: 0, flags: 0, time: 0, extra_info: 0, _union_pad: [0; 8] },
-        // V down
-        Input { type_: INPUT_KEYBOARD, _align: 0, vk: VK_V, scan: 0, flags: 0, time: 0, extra_info: 0, _union_pad: [0; 8] },
-        // V up
-        Input { type_: INPUT_KEYBOARD, _align: 0, vk: VK_V, scan: 0, flags: KEYEVENTF_KEYUP, time: 0, extra_info: 0, _union_pad: [0; 8] },
-        // Ctrl up
-        Input { type_: INPUT_KEYBOARD, _align: 0, vk: VK_CONTROL, scan: 0, flags: KEYEVENTF_KEYUP, time: 0, extra_info: 0, _union_pad: [0; 8] },
+        make(VK_MENU, KEYEVENTF_KEYUP),     // Alt up
+        make(VK_SHIFT, KEYEVENTF_KEYUP),     // Shift up
+        make(VK_CONTROL, 0),                  // Ctrl down
+        make(VK_V, 0),                        // V down
+        make(VK_V, KEYEVENTF_KEYUP),          // V up
+        make(VK_CONTROL, KEYEVENTF_KEYUP),    // Ctrl up
     ];
 
     let sent = unsafe {
-        SendInput(4, inputs.as_ptr(), size)
+        SendInput(6, inputs.as_ptr(), size)
     };
 
-    if sent == 4 {
+    if sent == 6 {
         Ok(())
     } else {
-        Err(format!("SendInput returned {} (expected 4), size={}", sent, size))
+        Err(format!("SendInput returned {} (expected 6), size={}", sent, size))
     }
 }
 

@@ -1,6 +1,6 @@
 [package]
 name = "clipslot"
-version = "0.2.9"
+version = "0.2.10"
 description = "Your clipboard, everywhere. With memory."
 authors = ["you"]
 edition = "2021"
