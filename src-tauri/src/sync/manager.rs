@@ -181,6 +181,23 @@ impl SyncManager {
         Ok(())
     }
 
+    /// Check if an error indicates an expired/invalid token.
+    fn is_auth_error(err: &str) -> bool {
+        err.contains("401") || err.contains("Unauthorized")
+            || err.contains("expired") || err.contains("Invalid or expired token")
+    }
+
+    /// Force-logout when token is expired so the UI shows the login screen.
+    pub async fn force_logout_expired(&self) {
+        clog!("Token expired — auto-logging out");
+        if let Some(ws) = self.ws.write().await.take() {
+            ws.disconnect().await;
+        }
+        *self.status.write().await = SyncStatus::Disconnected;
+        self.clear_auth_settings();
+        *self.auth.write().await = None;
+    }
+
     pub async fn get_sync_status(&self) -> SyncState {
         self.build_sync_state().await
     }
@@ -206,13 +223,23 @@ impl SyncManager {
         *self.status.write().await = SyncStatus::Syncing;
 
         clog!("start_sync: performing slot sync...");
-        let slot_synced = super::slot_sync::perform_full_slot_sync(
+        let slot_synced = match super::slot_sync::perform_full_slot_sync(
             &api,
             &token,
             &self.db,
             &device_id,
         )
-        .await?;
+        .await
+        {
+            Ok(n) => n,
+            Err(e) => {
+                if Self::is_auth_error(&e) {
+                    drop(api);
+                    self.force_logout_expired().await;
+                }
+                return Err(e);
+            }
+        };
         clog!("start_sync: slot sync done, synced {} slots", slot_synced);
 
         // History sync (opt-in)
@@ -514,6 +541,11 @@ impl SyncManager {
                         backoff = 3;
                     }
                     Err(e) => {
+                        if Self::is_auth_error(&e) {
+                            clog!("WS reconnect: auth error, forcing logout: {}", e);
+                            this.force_logout_expired().await;
+                            break;
+                        }
                         clog!("WS reconnect: failed: {}", e);
                         backoff = (backoff * 2).min(30);
                     }

@@ -380,16 +380,19 @@ async fn sync_login(
 ) -> Result<sync::types::SyncState, String> {
     clog!("Login attempt for {}", email);
     let state = sync.login(&email, &password).await?;
-    clog!("Login successful, starting auto-sync...");
-    match sync.start_sync().await {
-        Ok(msg) => clog!("Post-login sync: {}", msg),
-        Err(e) => clog!("ERROR: Post-login sync failed: {}", e),
-    }
-    match sync.connect_ws().await {
-        Ok(()) => clog!("Post-login WS connected"),
-        Err(e) => clog!("ERROR: Post-login WS connect failed: {}", e),
-    }
-    sync.inner().clone().spawn_ws_reconnect_loop();
+    clog!("Login successful, starting background sync...");
+    let sync_bg = sync.inner().clone();
+    tokio::spawn(async move {
+        match sync_bg.start_sync().await {
+            Ok(msg) => clog!("Post-login sync: {}", msg),
+            Err(e) => clog!("ERROR: Post-login sync failed: {}", e),
+        }
+        match sync_bg.connect_ws().await {
+            Ok(()) => clog!("Post-login WS connected"),
+            Err(e) => clog!("ERROR: Post-login WS connect failed: {}", e),
+        }
+        sync_bg.spawn_ws_reconnect_loop();
+    });
     Ok(state)
 }
 
@@ -401,16 +404,19 @@ async fn sync_register(
 ) -> Result<sync::types::SyncState, String> {
     clog!("Register attempt for {}", email);
     let state = sync.register(&email, &password).await?;
-    clog!("Register successful, starting auto-sync...");
-    match sync.start_sync().await {
-        Ok(msg) => clog!("Post-register sync: {}", msg),
-        Err(e) => clog!("ERROR: Post-register sync failed: {}", e),
-    }
-    match sync.connect_ws().await {
-        Ok(()) => clog!("Post-register WS connected"),
-        Err(e) => clog!("ERROR: Post-register WS connect failed: {}", e),
-    }
-    sync.inner().clone().spawn_ws_reconnect_loop();
+    clog!("Register successful, starting background sync...");
+    let sync_bg = sync.inner().clone();
+    tokio::spawn(async move {
+        match sync_bg.start_sync().await {
+            Ok(msg) => clog!("Post-register sync: {}", msg),
+            Err(e) => clog!("ERROR: Post-register sync failed: {}", e),
+        }
+        match sync_bg.connect_ws().await {
+            Ok(()) => clog!("Post-register WS connected"),
+            Err(e) => clog!("ERROR: Post-register WS connect failed: {}", e),
+        }
+        sync_bg.spawn_ws_reconnect_loop();
+    });
     Ok(state)
 }
 
