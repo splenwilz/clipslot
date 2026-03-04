@@ -548,8 +548,13 @@ pub fn run() {
                 }
             }
 
-            // Initialize encryption
+            // Initialize encryption (set data dir first so file fallback works)
             clog!("Initializing encryption...");
+            let data_dir_enc = app
+                .path()
+                .app_data_dir()
+                .expect("failed to resolve app data dir");
+            crypto::keychain::set_app_data_dir(data_dir_enc);
             let master_key = crypto::keychain::get_or_create_master_key()
                 .map_err(|e| Box::<dyn std::error::Error>::from(e))?;
             let crypto_engine = Arc::new(CryptoEngine::new(&master_key));

@@ -10,8 +10,8 @@ pub async fn generate_link_code(api: &ApiClient, token: &str) -> Result<String, 
     api.generate_link_code(token, &encoded).await
 }
 
-/// Redeem a 6-digit link code, receive the master key, and store it in the OS keychain.
-/// After this, the app must be restarted to pick up the new key.
+/// Redeem a 6-digit link code, receive the master key, and store it in the OS keychain
+/// and file fallback. After this, the app must be restarted to pick up the new key.
 pub async fn redeem_link_code(api: &ApiClient, token: &str, code: &str) -> Result<(), String> {
     let encoded = api.redeem_link_code(token, code).await?;
 
@@ -26,13 +26,10 @@ pub async fn redeem_link_code(api: &ApiClient, token: &str, code: &str) -> Resul
         ));
     }
 
-    // Store in OS keychain (overwrites existing key)
-    let entry = keyring::Entry::new("clipslot", "master-key")
-        .map_err(|e| format!("Keyring error: {}", e))?;
-    entry
-        .set_password(&encoded)
-        .map_err(|e| format!("Failed to store key in keychain: {}", e))?;
+    let mut key = [0u8; 32];
+    key.copy_from_slice(&key_bytes);
 
+    crate::crypto::keychain::import_master_key(&key)?;
     println!("[ClipSlot] Master key imported from link code — restart required");
     Ok(())
 }
